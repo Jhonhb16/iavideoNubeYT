@@ -1,0 +1,6 @@
+order,name,scale_m,asset_file,label
+1,soldier,1.8,soldier.glb,Soldier 1.8m
+2,car,4.5,car.glb,Car 4.5m
+3,tank,10.2,tank.glb,Tank 10.2m
+4,building,45.0,building.glb,Building 45m
+5,mountain,337.0,mountain.glb,Mountain 337m
