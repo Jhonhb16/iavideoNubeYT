@@ -1,6 +1,16 @@
-order,name,scale_m,asset_file,label
-1,soldier,1.8,soldier.glb,Soldier 1.8m
-2,car,4.5,car.glb,Car 4.5m
-3,tank,10.2,tank.glb,Tank 10.2m
-4,building,45.0,building.glb,Building 45m
-5,mountain,337.0,mountain.glb,Mountain 337m
+order,name,scale_m,asset_file,label,image_url
+1,soldier,1.8,soldier.glb,Soldier 1.8m,https://cdn.pixabay.com/photo/2014/12/06/22/06/soldier-557946_1280.png
+2,micro_drone,0.3,micro_drone.glb,Micro Drone 0.3m,https://cdn.pixabay.com/photo/2020/03/08/11/48/drone-4910168_1280.jpg
+3,willys_jeep,4.2,willys_jeep.glb,Willys Jeep 4.2m,https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Willys_MB_-_USA_-_1943.jpg/1280px-Willys_MB_-_USA_-_1943.jpg
+4,humvee,5.0,humvee.glb,Humvee 5.0m,https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/HMMWV_in_Iraq.jpg/1280px-HMMWV_in_Iraq.jpg
+5,sherman_m4,8.5,sherman_m4.glb,Sherman M4 8.5m,https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/M4_Sherman_tank.jpg/1280px-M4_Sherman_tank.jpg
+6,t90m,9.8,t90m.glb,T-90M 9.8m,https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/T-90M_tank.jpg/1280px-T-90M_tank.jpg
+7,m1_abrams,10.2,m1_abrams.glb,M1 Abrams 10.2m,https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/M1A2_Abrams_tank.jpg/1280px-M1A2_Abrams_tank.jpg
+8,panzer_maus,12.5,panzer_maus.glb,Panzer Maus 12.5m,https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/Panzer_Maus_tank.jpg/1280px-Panzer_Maus_tank.jpg
+9,apache_ah64,17.8,apache_ah64.glb,Apache AH-64 17.8m,https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/AH-64_Apache.jpg/1280px-AH-64_Apache.jpg
+10,ac130,28.0,ac130.glb,AC-130 28.0m,https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/AC-130U_Spooky.jpg/1280px-AC-130U_Spooky.jpg
+11,ratte_p1000,35.0,ratte_p1000.glb,Ratte P.1000 35.0m,https://upload.wikimedia.org/wikipedia/commons/thumb/8/8f/Landkreuzer_P.1000_Ratte_concept.jpg/1280px-Landkreuzer_P.1000_Ratte_concept.jpg
+12,b2_spirit,21.0,b2_spirit.glb,B-2 Spirit 21.0m,https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/B-2_Spirit_bomber.jpg/1280px-B-2_Spirit_bomber.jpg
+13,an225,84.0,an225.glb,An-225 84.0m,https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/An-225_Mriya.jpg/1280px-An-225_Mriya.jpg
+14,typhoon_sub,120.0,typhoon_sub.glb,Typhoon Sub 120.0m,https://upload.wikimedia.org/wikipedia/commons/thumb/4/4e/Typhoon_class_submarine.jpg/1280px-Typhoon_class_submarine.jpg
+15,ford_carrier,337.0,ford_carrier.glb,Ford Carrier 337.0m,https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/USS_Gerald_R._Ford_CVN-78.jpg/1280px-USS_Gerald_R._Ford_CVN-78.jpg

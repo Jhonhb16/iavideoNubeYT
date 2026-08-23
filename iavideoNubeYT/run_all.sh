@@ -136,6 +136,19 @@ create_directories() {
     log_success "Directory structure ready"
 }
 
+download_references() {
+    log_info "Phase 0: Downloading reference images..."
+    
+    cd "$SCRIPT_DIR"
+    python3 "$SRC_DIR/download_references.py"
+    
+    if [ $? -eq 0 ]; then
+        log_success "Reference images downloaded successfully"
+    else
+        log_warning "Some reference images failed to download (placeholders created)"
+    fi
+}
+
 generate_models() {
     if [ "$SKIP_MODELS" = true ]; then
         log_info "Skipping model generation (--skip-models flag set)"
@@ -159,13 +172,14 @@ generate_models() {
     fi
 }
 
-build_scene() {
-    log_info "Phase 2: Building Blender scene..."
+build_scene_and_setup_camera() {
+    log_info "Phase 2: Building Blender scene and setting up camera rig..."
     
     cd "$SCRIPT_DIR"
     
     # Check if Blender is available
     if command -v blender &> /dev/null; then
+        # Build scene with camera rig integrated
         blender -b -P "$SRC_DIR/build_scene.py" -- "$DATA_DIR/military_vehicles.csv"
         
         if [ $? -eq 0 ]; then
@@ -177,24 +191,6 @@ build_scene() {
     else
         log_warning "Blender not available. Scene building skipped."
         log_warning "You can run this step manually when Blender is installed."
-    fi
-}
-
-setup_camera_rig() {
-    log_info "Phase 3: Setting up adaptive camera rig..."
-    
-    cd "$SCRIPT_DIR"
-    
-    if command -v blender &> /dev/null; then
-        blender -b -P "$SRC_DIR/camera_rig.py"
-        
-        if [ $? -eq 0 ]; then
-            log_success "Camera rig configured"
-        else
-            log_warning "Camera rig setup had issues"
-        fi
-    else
-        log_warning "Blender not available. Camera rig setup skipped."
     fi
 }
 
@@ -323,9 +319,11 @@ main() {
     log_info "Starting pipeline execution..."
     echo ""
     
+    # Phase 0: Download reference images
+    download_references
+    
     generate_models
-    build_scene
-    setup_camera_rig
+    build_scene_and_setup_camera
     render_video
     generate_audio
     mix_final_video
