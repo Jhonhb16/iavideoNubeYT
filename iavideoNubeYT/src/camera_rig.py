@@ -36,7 +36,11 @@ class AdaptiveCameraRig:
         
         # Animation settings
         self.frames_per_object = 120  # 2 seconds at 60fps
+        self.pause_frames = 108       # 1.8 seconds pause/focus per vehicle (60fps * 1.8)
         self.transition_frames = 30   # Smooth transition between objects
+        
+        # Timestamps for audio/motion graphics sync
+        self.timestamps = {}
         
     def calculate_camera_distance(self, object_scale_m):
         """
@@ -117,7 +121,7 @@ class AdaptiveCameraRig:
         if focal_length:
             self.camera.data.keyframe_insert(data_path="lens", frame=frame)
     
-    def animate_scale_comparison(self, objects_data, start_frame=1):
+    def animate_scale_comparison(self, objects_data, start_frame=1, output_timestamps_path=None):
         """
         Animate camera moving through all objects in sequence.
         
@@ -127,6 +131,10 @@ class AdaptiveCameraRig:
                 - 'scale_m': Object height in meters
                 - 'location': Vector3 location (optional, default (0,0,0))
             start_frame: Starting frame number
+            output_timestamps_path: Optional path to save timestamps JSON
+            
+        Returns:
+            int: Total frames rendered
         """
         total_objects = len(objects_data)
         current_frame = start_frame
@@ -134,6 +142,13 @@ class AdaptiveCameraRig:
         print(f"\n{'='*50}")
         print(f"Setting up adaptive camera animation for {total_objects} objects")
         print(f"{'='*50}")
+        
+        # Set dynamic clip range for extreme scale differences
+        self.camera.data.clip_start = 0.05
+        self.camera.data.clip_end = 5000
+        print(f"  Camera clip range: {self.camera.data.clip_start}m - {self.camera.data.clip_end}m")
+        
+        fps = bpy.context.scene.render.fps
         
         for i, obj_data in enumerate(objects_data):
             obj_name = obj_data.get('name', f'Object_{i}')
@@ -158,26 +173,62 @@ class AdaptiveCameraRig:
             # Setup keyframe at current position
             self.setup_keyframe(current_frame, camera_location, rotation, focal_length)
             
-            print(f"  Frame {current_frame}: {obj_name} ({obj_scale}m)")
+            # Calculate timestamp in seconds
+            timestamp_seconds = current_frame / fps
+            self.timestamps[obj_name] = {
+                'frame': current_frame,
+                'timestamp': round(timestamp_seconds, 2),
+                'scale_m': obj_scale,
+                'focal_length_mm': round(focal_length, 1),
+                'camera_distance': round(distance_y, 2),
+                'camera_height': round(height_z, 2)
+            }
+            
+            print(f"  Frame {current_frame} ({timestamp_seconds:.2f}s): {obj_name} ({obj_scale}m)")
             print(f"    → Camera: {camera_location}")
             print(f"    → Focal: {focal_length:.1f}mm")
             
             # Move to next object
             current_frame += self.frames_per_object
             
-            # Add transition frames if not last object
+            # Add pause/focus frames after each vehicle (1.8 seconds)
             if i < total_objects - 1:
-                # Smooth interpolation handled by Blender's F-curves
-                pass
+                pause_frame = current_frame + self.pause_frames
+                self.setup_keyframe(pause_frame, camera_location, rotation, focal_length)
+                print(f"    → Pause/focus until frame {pause_frame} ({pause_frame/fps:.2f}s)")
+                current_frame = pause_frame
         
         # Hold final frame
         hold_frames = 60
-        self.setup_keyframe(current_frame + hold_frames, camera_location, rotation, focal_length)
+        final_frame = current_frame + hold_frames
+        self.setup_keyframe(final_frame, camera_location, rotation, focal_length)
         
-        print(f"\n✓ Animation complete: {current_frame + hold_frames} total frames")
+        print(f"\n✓ Animation complete: {final_frame} total frames ({final_frame/fps:.2f}s)")
+        
+        # Export timestamps if path provided
+        if output_timestamps_path:
+            self.export_timestamps(output_timestamps_path)
+        
         print(f"{'='*50}\n")
         
-        return current_frame + hold_frames
+        return final_frame
+    
+    def export_timestamps(self, output_path):
+        """Export timestamps to JSON file for audio/motion graphics sync."""
+        import json
+        
+        output_data = {
+            'timestamps': self.timestamps,
+            'total_frames': max([t['frame'] for t in self.timestamps.values()]) if self.timestamps else 0,
+            'fps': bpy.context.scene.render.fps,
+            'duration_seconds': max([t['timestamp'] for t in self.timestamps.values()]) if self.timestamps else 0
+        }
+        
+        with open(output_path, 'w') as f:
+            json.dump(output_data, f, indent=2)
+        
+        print(f"✓ Timestamps exported to: {output_path}")
+        return output_path
     
     def create_smooth_curves(self):
         """
@@ -217,9 +268,12 @@ class AdaptiveCameraRig:
         print(f"✓ Depth of field enabled (f/{fstop}, focus: {focus_distance}m)")
 
 
-def create_camera_rig_from_scene():
+def create_camera_rig_from_scene(timestamps_output_path=None):
     """
     Auto-detect objects in scene and create camera animation.
+    
+    Args:
+        timestamps_output_path: Optional path to save timestamps JSON
     """
     print("\n" + "="*50)
     print("Auto-detecting objects for camera rig setup")
@@ -260,7 +314,7 @@ def create_camera_rig_from_scene():
     # Create rig and animate
     try:
         rig = AdaptiveCameraRig()
-        rig.animate_scale_comparison(objects_data)
+        rig.animate_scale_comparison(objects_data, output_timestamps_path=timestamps_output_path)
         rig.create_smooth_curves()
         return rig
     except Exception as e:
@@ -271,13 +325,31 @@ def create_camera_rig_from_scene():
 # Entry point for Blender execution
 if __name__ == "__main__":
     import sys
+    import os
     
     print("\n" + "="*50)
     print("Camera Rig Module - Adaptive Tracking System")
     print("="*50)
     
+    # Get timestamps output path from command line or use default
+    timestamps_path = None
+    if len(sys.argv) > 6:
+        try:
+            idx = sys.argv.index('--timestamps')
+            if idx + 1 < len(sys.argv):
+                timestamps_path = sys.argv[idx + 1]
+        except (ValueError, IndexError):
+            pass
+    
+    # Default to data/timestamps.json
+    if not timestamps_path:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        timestamps_path = os.path.join(os.path.dirname(script_dir), 'data', 'timestamps.json')
+    
+    print(f"Timestamps will be saved to: {timestamps_path}")
+    
     # Try to auto-setup from scene
-    rig = create_camera_rig_from_scene()
+    rig = create_camera_rig_from_scene(timestamps_output_path=timestamps_path)
     
     if rig:
         print("\n✓ Camera rig successfully configured!")

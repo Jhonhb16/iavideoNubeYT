@@ -204,8 +204,8 @@ def configure_render_settings(resolution_x=1920, resolution_y=1080, fps=60):
     return scene
 
 
-def build_complete_scene(csv_data_path=None):
-    """Build complete comparison scene from CSV data."""
+def build_complete_scene(csv_data_path=None, output_timestamps_path=None):
+    """Build complete comparison scene from CSV data with camera rig."""
     print("=" * 50)
     print("Building 3D Scale Comparison Scene")
     print("=" * 50)
@@ -225,7 +225,7 @@ def build_complete_scene(csv_data_path=None):
     print(f"✓ Lighting setup: {[l.name for l in lights]}")
     print(f"✓ Camera configured: {camera.name}")
     
-    # If CSV provided, import assets
+    # If CSV provided, import assets and setup camera rig
     if csv_data_path:
         import csv
         try:
@@ -262,6 +262,28 @@ def build_complete_scene(csv_data_path=None):
         except Exception as e:
             print(f"Warning: Could not process CSV: {e}")
     
+    # Setup camera rig with adaptive animation
+    print("\n" + "="*50)
+    print("Setting up adaptive camera rig...")
+    print("="*50)
+    
+    try:
+        from .camera_rig import create_camera_rig_from_scene
+    except ImportError:
+        from camera_rig import create_camera_rig_from_scene
+    
+    # Default timestamps path
+    if not output_timestamps_path:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_timestamps_path = os.path.join(os.path.dirname(script_dir), 'data', 'timestamps.json')
+    
+    rig = create_camera_rig_from_scene(timestamps_output_path=output_timestamps_path)
+    
+    if rig:
+        print("✓ Camera rig animation configured!")
+    else:
+        print("⚠ Camera rig setup skipped")
+    
     print("=" * 50)
     print("Scene build complete!")
     print("=" * 50)
@@ -270,7 +292,8 @@ def build_complete_scene(csv_data_path=None):
         'floor': floor,
         'lights': lights,
         'camera': camera,
-        'scene': scene
+        'scene': scene,
+        'rig': rig
     }
 
 
@@ -281,12 +304,31 @@ if __name__ == "__main__":
     
     # Get CSV path from command line if provided
     csv_path = None
+    timestamps_path = None
+    
     if len(sys.argv) > 6:  # Blender passes arguments after --
-        csv_path = sys.argv[sys.argv.index('--') + 1] if '--' in sys.argv else None
+        args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
+        
+        # Parse CSV path (first positional argument or --csv)
+        if '--csv' in args:
+            csv_idx = args.index('--csv')
+            if csv_idx + 1 < len(args):
+                csv_path = args[csv_idx + 1]
+        elif len(args) > 0 and not args[0].startswith('--'):
+            csv_path = args[0]
+        
+        # Parse timestamps path (--timestamps)
+        if '--timestamps' in args:
+            ts_idx = args.index('--timestamps')
+            if ts_idx + 1 < len(args):
+                timestamps_path = args[ts_idx + 1]
     
     # Default to data/military_vehicles.csv
     if not csv_path:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         csv_path = os.path.join(os.path.dirname(script_dir), 'data', 'military_vehicles.csv')
     
-    build_complete_scene(csv_path)
+    print(f"CSV data path: {csv_path}")
+    print(f"Timestamps output path: {timestamps_path}")
+    
+    build_complete_scene(csv_path, timestamps_path)

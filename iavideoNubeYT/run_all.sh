@@ -179,11 +179,20 @@ build_scene_and_setup_camera() {
     
     # Check if Blender is available
     if command -v blender &> /dev/null; then
-        # Build scene with camera rig integrated
-        blender -b -P "$SRC_DIR/build_scene.py" -- "$DATA_DIR/military_vehicles.csv"
+        # Build scene with camera rig integrated and timestamps export
+        blender -b -P "$SRC_DIR/build_scene.py" -- \
+            --csv "$DATA_DIR/military_vehicles.csv" \
+            --timestamps "$DATA_DIR/timestamps.json"
         
         if [ $? -eq 0 ]; then
-            log_success "Scene built successfully"
+            log_success "Scene built successfully with camera animation"
+            
+            # Verify timestamps were generated
+            if [ -f "$DATA_DIR/timestamps.json" ]; then
+                log_success "Timestamps exported to: $DATA_DIR/timestamps.json"
+            else
+                log_warning "Timestamps file not generated"
+            fi
         else
             log_error "Scene building failed"
             return 1
@@ -222,33 +231,54 @@ generate_audio() {
         return 0
     fi
     
-    log_info "Phase 5: Generating cinematic audio..."
+    log_info "Phase 3: Generating cinematic audio with audio_engine.py..."
     
     cd "$SCRIPT_DIR"
     
-    # Calculate approximate video duration based on number of objects
-    NUM_OBJECTS=$(tail -n +2 "$DATA_DIR/military_vehicles.csv" | wc -l)
-    VIDEO_DURATION=$((NUM_OBJECTS * 5))  # ~5 seconds per object
+    # Use timestamps from Blender for precise sync
+    TIMESTAMPS_FILE="$DATA_DIR/timestamps.json"
     
-    # Generate timestamps for transitions and markers
-    TRANSITIONS=""
-    MARKERS="0"
-    for ((i=1; i<NUM_OBJECTS; i++)); do
-        TS=$((i * 5))
-        TRANSITIONS="$TRANSITIONS,$TS"
-        MARKERS="$MARKERS,$TS"
-    done
-    
-    python3 "$SRC_DIR/generate_audio.py" \
-        --duration "$VIDEO_DURATION" \
-        --transitions "$TRANSITIONS" \
-        --markers "$MARKERS" \
-        --output "$ASSETS_DIR/audio"
+    if [ -f "$TIMESTAMPS_FILE" ]; then
+        log_info "Using timestamps from: $TIMESTAMPS_FILE"
+        python3 "$SRC_DIR/audio_engine.py" \
+            --csv "$DATA_DIR/military_vehicles.csv" \
+            --timestamps "$TIMESTAMPS_FILE" \
+            --output-dir "$ASSETS_DIR/audio"
+    else
+        log_warning "Timestamps file not found, using auto-calculated duration"
+        
+        # Calculate approximate video duration based on number of objects
+        NUM_OBJECTS=$(tail -n +2 "$DATA_DIR/military_vehicles.csv" | wc -l)
+        VIDEO_DURATION=$((NUM_OBJECTS * 5))  # ~5 seconds per object
+        
+        python3 "$SRC_DIR/audio_engine.py" \
+            --csv "$DATA_DIR/military_vehicles.csv" \
+            --duration "$VIDEO_DURATION" \
+            --output-dir "$ASSETS_DIR/audio"
+    fi
     
     if [ $? -eq 0 ]; then
         log_success "Audio generated successfully"
     else
         log_warning "Audio generation had issues"
+    fi
+}
+
+motion_graphics() {
+    log_info "Phase 4: Generating motion graphics overlays..."
+    
+    cd "$SCRIPT_DIR"
+    
+    python3 "$SRC_DIR/motion_graphics.py" \
+        --csv "$DATA_DIR/military_vehicles.csv" \
+        --timestamps "$DATA_DIR/timestamps.json" \
+        --output-dir "$ASSETS_DIR/graphics" \
+        --fonts-dir "$ASSETS_DIR/fonts"
+    
+    if [ $? -eq 0 ]; then
+        log_success "Motion graphics generated successfully"
+    else
+        log_warning "Motion graphics generation had issues"
     fi
 }
 
@@ -326,6 +356,7 @@ main() {
     build_scene_and_setup_camera
     render_video
     generate_audio
+    motion_graphics
     mix_final_video
     
     print_summary
