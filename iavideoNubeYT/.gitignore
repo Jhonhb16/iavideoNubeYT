@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Blender
+*.blend1
+*.blend2
+.blender.log
+
+# Render outputs (keep directory, ignore content)
+output/renders/*.mp4
+output/renders/*.mov
+output/renders/*.avi
+output/renders/*.png
+output/renders/temp_sequence/
+
+# Generated assets (keep directory structure)
+assets/models/*.glb
+assets/models/*.gltf
+assets/audio/*.wav
+assets/audio/*.mp3
+
+# TRELLIS model cache (large files)
+models/
+*.pth
+*.pt
+*.onnx
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
