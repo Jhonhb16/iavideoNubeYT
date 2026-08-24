@@ -357,7 +357,23 @@ main() {
     render_video
     generate_audio
     motion_graphics
+    
+    # Phase 5: Generate thumbnail
+    log_info "Phase 5: Generating high-CTR thumbnail..."
+    cd "$SCRIPT_DIR"
+    python3 "$SRC_DIR/generate_thumbnail.py"
+    if [ $? -eq 0 ]; then
+        log_success "Thumbnail generated successfully"
+    else
+        log_warning "Thumbnail generation failed"
+    fi
+    
     mix_final_video
+    
+    # Phase 6: Quality Assurance Verification
+    log_info "Phase 6: Running quality assurance checks..."
+    cd "$SCRIPT_DIR"
+    python3 "$SRC_DIR/verify_pipeline.py"
     
     print_summary
 }
