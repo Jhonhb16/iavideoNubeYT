@@ -1,0 +1,10 @@
+order,name_en,scale_meters,asset_file,label_text,sfx_type
+1,Astronaut,1.8,astronaut.glb,1.8 m (6 ft),suit_breathing
+2,TIE Fighter,7.2,tie_fighter.glb,7.2 m (24 ft),laser_pew
+3,X-Wing Starfighter,12.5,xwing.glb,12.5 m (41 ft),s_foil_lock
+4,Razor Crest,24.0,razor_crest.glb,24 m (79 ft),engine_heavy
+5,Millennium Falcon,34.7,falcon.glb,34.7 m (114 ft),hyperdrive_whine
+6,USS Enterprise (NCC-1701),289.0,enterprise.glb,289 m (948 ft),warp_hum
+7,Imperial Star Destroyer,1600.0,star_destroyer.glb,1.6 km (1 mile),sub_bass_rumble
+8,Executor Super Star Destroyer,19000.0,super_destroyer.glb,19 km (11.8 miles),colossus_drone
+9,Death Star I,160000.0,death_star.glb,160 km (99.4 miles),planet_laser

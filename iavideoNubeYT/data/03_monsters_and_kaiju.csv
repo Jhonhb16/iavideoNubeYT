@@ -1,0 +1,9 @@
+order,name_en,scale_meters,asset_file,label_text,sfx_type
+1,Average Human,1.8,human.glb,1.8 m (6 ft),heartbeat_fast
+2,Velociraptor,2.0,raptor.glb,2 m (6.5 ft),raptor_screech
+3,T-Rex,6.1,trex.glb,6.1 m (20 ft),dino_roar
+4,King Kong (Skull Island),31.7,kong.glb,31.7 m (104 ft),chest_beat_heavy
+5,Cloverfield Monster,82.0,cloverfield.glb,82 m (269 ft),alien_screech
+6,Godzilla (Monsterverse),119.8,godzilla.glb,119.8 m (393 ft),atomic_breath_charge
+7,King Ghidorah,158.8,ghidorah.glb,158.8 m (521 ft),triple_roar_lightning
+8,Godzilla Earth,318.0,godzilla_earth.glb,318 m (1,043 ft),earthquake_sub
