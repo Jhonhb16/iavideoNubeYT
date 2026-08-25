@@ -12,6 +12,11 @@ import bpy
 import os
 import sys
 import shutil
+
+# 30 fps por defecto: los movimientos de camara son lentos y las pausas
+# largas, asi que 60 fps duplica el coste de render sin ganancia visible.
+# En un video de 8 minutos son 14.400 fotogramas en vez de 28.800.
+DEFAULT_FPS = int(os.environ.get('IAVIDEO_FPS', '30'))
 import subprocess
 from pathlib import Path
 
@@ -20,7 +25,7 @@ def configure_output_settings(
     output_dir: str,
     resolution_x: int = 1920,
     resolution_y: int = 1080,
-    fps: int = 60,
+    fps: int = None,
     format_type: str = 'FFMPEG'
 ):
     """
@@ -33,6 +38,7 @@ def configure_output_settings(
         fps: Frames per second (60 for smooth motion)
         format_type: Output format ('PNG' for image sequence, 'FFMPEG' for direct MP4)
     """
+    fps = DEFAULT_FPS if fps is None else fps
     scene = bpy.context.scene
     
     # Resolution
@@ -558,7 +564,7 @@ def render_to_image_sequence(
 def prepend_inverted_hook(video_path: str, output_path: str,
                           teaser_seconds: float = 1.5,
                           black_seconds: float = 0.12,
-                          crf: int = 18, fps: int = 60) -> bool:
+                          crf: int = 18, fps: int = None) -> bool:
     """
     Prepend an inverted hook: a teaser of the payoff, then a hard cut to black,
     then the full run from the smallest object.
@@ -580,6 +586,8 @@ def prepend_inverted_hook(video_path: str, output_path: str,
         fps: Frame rate (must match the source)
     """
     import subprocess
+
+    fps = DEFAULT_FPS if fps is None else fps
 
     try:
         probe = subprocess.run(
@@ -648,7 +656,7 @@ def prepend_inverted_hook(video_path: str, output_path: str,
 def convert_sequence_to_video(
     sequence_dir: str,
     output_path: str,
-    fps: int = 60,
+    fps: int = None,
     resolution: tuple = (1920, 1080),
     crf: int = 18
 ) -> bool:
@@ -665,6 +673,7 @@ def convert_sequence_to_video(
     Returns:
         bool: Success status
     """
+    fps = DEFAULT_FPS if fps is None else fps
     try:
         # Find first image to determine format
         images = [f for f in os.listdir(sequence_dir) if f.startswith('frame_')]
@@ -820,7 +829,7 @@ def run_full_pipeline(
             success = convert_sequence_to_video(
                 sequence_dir,
                 output_video,
-                fps=60,
+                fps=DEFAULT_FPS,
                 resolution=(res_x, res_y),
                 crf=18
             )

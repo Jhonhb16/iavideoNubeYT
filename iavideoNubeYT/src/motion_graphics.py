@@ -275,7 +275,9 @@ class MotionGraphicsGenerator:
     
     def create_info_panel(self, vehicle_data, width, height):
         """Create lower-third info panel with vehicle telemetry."""
-        panel_height = 180
+        # 180px solo dejaba sitio para 3 lineas de datos. Los datos son el
+        # contenido del video, asi que el panel crece para mostrarlos todos.
+        panel_height = 300
         panel = Image.new('RGBA', (width, panel_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(panel)
         
@@ -290,7 +292,7 @@ class MotionGraphicsGenerator:
 
         # Center section: Vehicle info (shifted left into the reclaimed space)
         margin_left = 60
-        y_base = panel_height - 140
+        y_base = panel_height - 260
         
         # Vehicle name (large)
         font_large = self.get_font(32)
@@ -303,26 +305,42 @@ class MotionGraphicsGenerator:
         font_small = self.get_font(16)
         
         specs_y = y_base + 45
-        
-        # Scale in meters and feet
-        scale_m = float(vehicle_data.get('scale_m', 0))
+
+        # Los datos son el contenido del video, así que salen del CSV.
+        # Antes ORIGIN se adivinaba del nombre y WEIGHT se estimaba de la
+        # escala: cifras inventadas presentadas como hechos. Ahora se leen
+        # del dataset y, si un campo falta, sencillamente no se dibuja.
+        scale_m = float(vehicle_data.get('scale_m', 0) or 0)
         scale_ft = scale_m * 3.28084
-        
-        scale_text = f"LENGTH: {scale_m:.1f}m / {scale_ft:.1f}ft"
-        draw.text((margin_left, specs_y), scale_text, 
-                  font=font_medium, fill=self.colors['text_primary'])
-        
-        # Country of origin (placeholder based on vehicle type)
-        country = self._get_country_of_origin(vehicle_data.get('name', ''))
-        country_text = f"ORIGIN: {country}"
-        draw.text((margin_left, specs_y + 30), country_text, 
-                  font=font_small, fill=self.colors['text_secondary'])
-        
-        # Estimated weight (placeholder based on scale)
-        weight = self._estimate_weight(scale_m, vehicle_data.get('name', ''))
-        weight_text = f"EST. WEIGHT: {weight}"
-        draw.text((margin_left, specs_y + 55), weight_text, 
-                  font=font_small, fill=self.colors['text_secondary'])
+
+        # La etiqueta de la dimensión es configurable: "length" no aplica a
+        # un rascacielos ni a un animal.
+        dim = str(vehicle_data.get('dimension_label') or 'LENGTH').upper()
+        lineas = [
+            (f"{dim}: {scale_m:.1f}m / {scale_ft:.1f}ft",
+             font_medium, self.colors['text_primary']),
+        ]
+
+        def agregar(campo, plantilla):
+            valor = vehicle_data.get(campo)
+            if valor not in (None, '', 'nan'):
+                lineas.append((plantilla.format(valor),
+                               font_small, self.colors['text_secondary']))
+
+        agregar('origin',      "ORIGIN: {}")
+        agregar('weight',      "WEIGHT: {}")
+        agregar('year',        "YEAR: {}")
+        agregar('speed',       "TOP SPEED: {}")
+        agregar('crew',        "CREW: {}")
+        agregar('units_built', "UNITS BUILT: {}")
+        agregar('cost',        "UNIT COST: {}")
+        agregar('fact',        "{}")
+
+        # Espacio disponible en el panel; se recorta antes de desbordar
+        max_lineas = max(1, int((panel_height - specs_y - 20) // 25))
+        for i, (texto, fuente, color) in enumerate(lineas[:max_lineas]):
+            draw.text((margin_left, specs_y + i * 25), texto,
+                      font=fuente, fill=color)
         
         # Right section: Order number badge
         order = vehicle_data.get('order', 1)
