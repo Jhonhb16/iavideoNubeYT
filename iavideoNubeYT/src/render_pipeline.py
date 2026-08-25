@@ -295,20 +295,185 @@ def render_animation(output_dir: str, start_frame: int = 1, end_frame: int = Non
         return False
 
 
+def _frame_path(output_dir: str, frame: int, format_type: str) -> str:
+    """Exact on-disk path for a rendered frame (4-digit, matches the FFmpeg pattern)."""
+    ext = {'PNG': 'png', 'JPEG': 'jpg', 'OPEN_EXR': 'exr'}.get(format_type, 'png')
+    return os.path.join(output_dir, f"frame_{frame:04d}.{ext}")
+
+
+def pending_frames(output_dir: str, start_frame: int, end_frame: int,
+                   format_type: str = 'PNG', min_bytes: int = 1024) -> list:
+    """
+    Return the frames still needing a render.
+
+    A frame counts as done only when its file exists AND is larger than
+    min_bytes: a pod killed mid-write leaves a truncated file, and treating
+    that as complete would bake a corrupt frame into the final video.
+    """
+    pending = []
+    for f in range(start_frame, end_frame + 1):
+        path = _frame_path(output_dir, f, format_type)
+        try:
+            if os.path.getsize(path) >= min_bytes:
+                continue
+        except OSError:
+            pass
+        pending.append(f)
+    return pending
+
+
+def setup_gpu_devices(prefer: str = None) -> dict:
+    """
+    Enable GPU compute devices for rendering.
+
+    Blender headless does NOT pick up the GPU on its own: without this, a
+    RunPod pod with a 4090 renders on CPU while still billing for the GPU.
+
+    This only affects Cycles. EEVEE Next uses whatever GPU context Blender
+    was launched with, so for EEVEE the decisive factor is launching with a
+    real GPU context (EGL) rather than a software display like xvfb.
+
+    Every step is guarded: if anything about the preferences API differs on
+    this build, the function reports it and returns instead of raising, so a
+    render never dies because of device configuration.
+
+    Args:
+        prefer: 'OPTIX', 'CUDA', 'HIP', 'ONEAPI', 'METAL' or None to auto-pick.
+                Defaults to the IAVIDEO_GPU_BACKEND env var, else auto.
+
+    Returns:
+        dict with 'backend', 'devices' (list of enabled names), 'ok' (bool)
+    """
+    result = {'backend': None, 'devices': [], 'ok': False, 'note': ''}
+
+    try:
+        prefs = bpy.context.preferences
+        cprefs = prefs.addons['cycles'].preferences
+    except Exception as e:
+        result['note'] = f"Cycles preferences unavailable: {e}"
+        print(f"⚠ GPU setup skipped — {result['note']}")
+        return result
+
+    prefer = prefer or os.environ.get('IAVIDEO_GPU_BACKEND') or None
+
+    # OPTIX first: on an RTX card it is normally faster than CUDA
+    candidates = [prefer] if prefer else ['OPTIX', 'CUDA', 'HIP', 'ONEAPI', 'METAL']
+
+    chosen = None
+    for backend in candidates:
+        if not backend:
+            continue
+        try:
+            cprefs.compute_device_type = backend
+        except (TypeError, AttributeError):
+            continue  # not supported on this build
+
+        try:
+            devices = cprefs.get_devices_for_type(backend)
+        except (AttributeError, TypeError):
+            try:
+                cprefs.get_devices()
+                devices = [d for d in cprefs.devices if d.type == backend]
+            except Exception:
+                devices = []
+
+        if devices:
+            chosen = backend
+            break
+
+    if not chosen:
+        result['note'] = "No GPU compute devices found; rendering on CPU"
+        print(f"⚠ {result['note']}")
+        return result
+
+    result['backend'] = chosen
+
+    # Enable every GPU of the chosen type; leave CPU off so it does not
+    # bottleneck the tiles on a fast card.
+    try:
+        for device in cprefs.devices:
+            if device.type == chosen:
+                device.use = True
+                result['devices'].append(device.name)
+            elif device.type == 'CPU':
+                device.use = False
+    except Exception as e:
+        result['note'] = f"Could not toggle devices: {e}"
+        print(f"⚠ {result['note']}")
+        return result
+
+    # Point the scene at GPU compute (no-op for EEVEE, required for Cycles)
+    try:
+        bpy.context.scene.cycles.device = 'GPU'
+    except (AttributeError, TypeError):
+        pass
+
+    result['ok'] = bool(result['devices'])
+
+    print(f"✓ GPU backend: {chosen}")
+    for name in result['devices']:
+        print(f"    · {name}")
+    if not result['devices']:
+        print("    (backend selected but no devices enabled — will use CPU)")
+
+    return result
+
+
+def report_render_device():
+    """Print what the current scene will actually render on."""
+    scene = bpy.context.scene
+    engine = getattr(scene.render, 'engine', '?')
+    print(f"\n{'='*50}")
+    print(f"Render engine: {engine}")
+
+    if 'CYCLES' in str(engine):
+        dev = getattr(getattr(scene, 'cycles', None), 'device', '?')
+        print(f"Cycles device: {dev}")
+        if dev != 'GPU':
+            print("⚠ Cycles is set to CPU — GPU will NOT be used")
+    else:
+        # EEVEE: the GPU context comes from how Blender was launched
+        print("EEVEE renders on the GPU context Blender was launched with.")
+        print("If launched under xvfb (software GL), this is CPU-bound.")
+        try:
+            import gpu
+            renderer = gpu.platform.renderer_get()
+            vendor = gpu.platform.vendor_get()
+            print(f"GPU renderer: {renderer}")
+            print(f"GPU vendor:   {vendor}")
+            soft = any(s in str(renderer).lower()
+                       for s in ('llvmpipe', 'softpipe', 'swrast', 'software'))
+            if soft:
+                print("⚠ SOFTWARE rasterizer detected — EEVEE is running on CPU.")
+                print("  Launch Blender with an EGL/GPU context instead of xvfb.")
+            else:
+                print("✓ Hardware GPU context detected.")
+        except Exception as e:
+            print(f"(could not query GPU context: {e})")
+    print(f"{'='*50}\n")
+
+
 def render_to_image_sequence(
     output_dir: str,
     start_frame: int = 1,
     end_frame: int = None,
-    format_type: str = 'PNG'
+    format_type: str = 'PNG',
+    resume: bool = True
 ) -> bool:
     """
     Render animation as image sequence (more reliable for long renders).
-    
+
+    Renders frame by frame rather than via a single animation call, so an
+    interrupted run can resume: at ~3400 frames a pod dying at frame 3000
+    would otherwise mean restarting from zero.
+
     Args:
         output_dir: Directory for image sequence
         start_frame: Starting frame
         end_frame: Ending frame
         format_type: Image format ('PNG', 'JPEG', 'OPEN_EXR')
+        resume: Skip frames already present on disk (set IAVIDEO_NO_RESUME=1
+                to force a full re-render)
     
     Returns:
         bool: Success status
@@ -335,24 +500,58 @@ def render_to_image_sequence(
     scene.frame_start = start_frame
     if end_frame:
         scene.frame_end = end_frame
-    
-    # Setup output path with frame placeholder
+    end_frame = int(scene.frame_end)
+
     os.makedirs(output_dir, exist_ok=True)
-    base_path = os.path.join(output_dir, "frame_####")
-    scene.render.filepath = base_path
-    
+
+    if os.environ.get('IAVIDEO_NO_RESUME', '').lower() in ('1', 'true', 'yes'):
+        resume = False
+
+    total = end_frame - start_frame + 1
+    if resume:
+        todo = pending_frames(output_dir, start_frame, end_frame, format_type)
+        already = total - len(todo)
+        if already:
+            print(f"↻ Resume: {already}/{total} frames already on disk, "
+                  f"{len(todo)} remaining")
+    else:
+        todo = list(range(start_frame, end_frame + 1))
+
     print(f"\n{'='*50}")
     print(f"Rendering image sequence: {format_type}")
-    print(f"Frames: {start_frame}-{scene.frame_end}")
+    print(f"Frames: {start_frame}-{end_frame} ({len(todo)} to render)")
     print(f"Output: {output_dir}/frame_XXXX.{format_type.lower()}")
     print(f"{'='*50}\n")
-    
+
+    if not todo:
+        print("✓ All frames already rendered; nothing to do.")
+        return True
+
+    import time as _time
+    started = _time.time()
+
     try:
-        bpy.ops.render.render(animation=True)
+        for i, frame in enumerate(todo, 1):
+            scene.frame_set(frame)
+            # Explicit per-frame path so resume can detect exactly what exists
+            scene.render.filepath = _frame_path(output_dir, frame, format_type)
+            bpy.ops.render.render(write_still=True)
+
+            if i == 1 or i % 25 == 0 or i == len(todo):
+                elapsed = _time.time() - started
+                rate = i / elapsed if elapsed > 0 else 0
+                remaining = (len(todo) - i) / rate if rate > 0 else 0
+                print(f"  frame {frame} — {i}/{len(todo)} "
+                      f"({rate:.2f} fps, ~{remaining/60:.1f} min left)")
+
         print(f"\n✓ Image sequence render complete!")
         return True
+    except KeyboardInterrupt:
+        print(f"\n⚠ Interrupted. Progress is saved — re-run to resume.")
+        return False
     except Exception as e:
-        print(f"\n⚠ Render failed: {e}")
+        print(f"\n⚠ Render failed at frame {frame}: {e}")
+        print(f"  Completed frames are kept; re-run to resume from here.")
         return False
 
 
@@ -576,6 +775,17 @@ def run_full_pipeline(
     setup_eevee_next_quality(quality)
     setup_color_management()
     setup_cinematic_compositor()
+
+    # Enable GPU compute (Cycles) and report what will actually be used.
+    # Both are non-fatal: a failure here degrades to CPU, it never aborts.
+    try:
+        setup_gpu_devices()
+    except Exception as e:
+        print(f"⚠ GPU setup raised ({e}); continuing on CPU")
+    try:
+        report_render_device()
+    except Exception:
+        pass
     
     # Get frame count from camera animation if available
     scene = bpy.context.scene
