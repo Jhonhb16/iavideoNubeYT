@@ -105,7 +105,7 @@ def setup_eevee_next_quality(preset: str = "high"):
     eevee.bloom_threshold = 0.7
     eevee.bloom_knee = 0.5
     eevee.bloom_intensity = 0.6
-    eevee.bloom_color = (1.0, 1.0, 1.0, 1.0)
+    eevee.bloom_color = (1.0, 1.0, 1.0)
     
     # Shadows
     eevee.use_shadows = True

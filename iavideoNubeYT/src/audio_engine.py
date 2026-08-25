@@ -64,7 +64,8 @@ class AudioEngine:
     
     def generate_cinematic_whoosh(self, duration: float = 2.0, 
                                    start_freq: float = 100, 
-                                   end_freq: float = 800) -> bytes:
+                                   end_freq: float = 800,
+                                   amplitude: float = 0.8) -> bytes:
         """Generate cinematic whoosh effect with frequency sweep."""
         num_samples = int(self.sample_rate * duration)
         samples = []

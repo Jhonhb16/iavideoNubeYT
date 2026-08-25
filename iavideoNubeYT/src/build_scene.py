@@ -267,6 +267,9 @@ def build_complete_scene(csv_data_path=None, output_timestamps_path=None):
     print("Setting up adaptive camera rig...")
     print("="*50)
     
+    import sys, os
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
     try:
         from .camera_rig import create_camera_rig_from_scene
     except ImportError:
