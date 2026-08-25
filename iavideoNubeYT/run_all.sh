@@ -121,8 +121,10 @@ check_dependencies() {
     
     # Check required Python packages
     log_info "Checking Python packages..."
-    python3 -c "import numpy, PIL, tqdm" 2>/dev/null || {
-        log_warning "Some Python packages missing. Run: pip install -r requirements.txt"
+    python3 -c "import numpy, PIL, tqdm, trimesh" 2>/dev/null || {
+        log_warning "Some Python packages missing. Installing from requirements.txt..."
+        pip install -q trimesh numpy Pillow tqdm 2>/dev/null || \
+            log_warning "Install failed. Run manually: pip install -r requirements.txt"
     }
 }
 

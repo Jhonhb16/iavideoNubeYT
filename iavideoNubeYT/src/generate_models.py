@@ -247,8 +247,11 @@ def batch_convert_from_csv(
 def create_placeholder_models(csv_path: str, models_dir: str = "./assets/models"):
     """
     Create simple placeholder GLB models when TRELLIS is unavailable.
-    Useful for testing the pipeline without AI generation.
-    
+    Uses trimesh (pure Python) so it runs outside of Blender.
+
+    Each placeholder is a real 3D box whose dimensions are derived from the
+    scale_m column of the CSV, with a color that reflects its size class.
+
     Args:
         csv_path: Path to CSV with asset definitions
         models_dir: Directory for output GLB files
@@ -256,63 +259,93 @@ def create_placeholder_models(csv_path: str, models_dir: str = "./assets/models"
     print("\n" + "="*50)
     print("Creating placeholder 3D models for testing")
     print("="*50)
-    
+
     try:
-        import bpy
-        import mathutils
-        
+        import trimesh
+        import numpy as np
+    except ImportError:
+        print("✗ trimesh is not installed. Run: pip install trimesh")
+        return False
+
+    created = 0
+    failed = 0
+
+    try:
+        os.makedirs(models_dir, exist_ok=True)
+
         with open(csv_path, 'r') as f:
             reader = csv.DictReader(f)
-            
+
             for row in reader:
                 name = row.get('name', 'placeholder')
                 asset_file = row.get('asset_file', f'{name}.glb')
-                scale_m = float(row.get('scale_m', 1.0))
-                
-                # Clear scene
-                bpy.ops.object.select_all(action='SELECT')
-                bpy.ops.object.delete()
-                
-                # Create simple cube scaled to approximate size
-                bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, scale_m/2))
-                obj = bpy.context.active_object
-                obj.name = name
-                obj.scale = (1, 1, scale_m)
-                
-                # Add material
-                mat = bpy.data.materials.new(name=f"{name}_mat")
-                mat.use_nodes = True
-                bsdf = mat.node_tree.nodes["Principled BSDF"]
-                
-                # Color based on scale (small=green, large=red)
-                if scale_m < 5:
-                    color = (0.2, 0.8, 0.2, 1.0)
-                elif scale_m < 50:
-                    color = (0.8, 0.8, 0.2, 1.0)
-                else:
-                    color = (0.8, 0.2, 0.2, 1.0)
-                
-                bsdf.inputs["Base Color"].default_value = color
-                
-                obj.data.materials.append(mat)
-                
-                # Export as GLB
-                output_path = os.path.join(models_dir, asset_file)
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                
-                bpy.ops.export_scene.gltf(
-                    filepath=output_path,
-                    export_format='GLB',
-                    use_selection=True
-                )
-                
-                print(f"  ✓ Created placeholder: {asset_file} ({scale_m}m)")
-        
-        print(f"\n✓ Placeholder models created successfully")
-        print(f"  Replace with real TRELLIS models when GPU is available\n")
-        
+
+                try:
+                    scale_m = float(row.get('scale_m', 1.0))
+                except (TypeError, ValueError):
+                    print(f"  ⚠ Invalid scale_m for '{name}', defaulting to 1.0m")
+                    scale_m = 1.0
+
+                if scale_m <= 0:
+                    print(f"  ⚠ Non-positive scale_m for '{name}', defaulting to 1.0m")
+                    scale_m = 1.0
+
+                try:
+                    # Box proportions: length is the defining dimension (scale_m),
+                    # width and height derived so the shape reads as a vehicle.
+                    length = scale_m
+                    width = max(scale_m * 0.35, 0.05)
+                    height = max(scale_m * 0.30, 0.05)
+
+                    mesh = trimesh.creation.box(extents=(length, width, height))
+
+                    # Sit the box on the floor (z=0) instead of centered on origin
+                    mesh.apply_translation((0.0, 0.0, height / 2.0))
+
+                    # Color based on scale (small=green, medium=yellow, large=red)
+                    if scale_m < 5:
+                        color = [51, 204, 51, 255]
+                    elif scale_m < 50:
+                        color = [204, 204, 51, 255]
+                    else:
+                        color = [204, 51, 51, 255]
+
+                    mesh.visual.face_colors = np.tile(
+                        np.array(color, dtype=np.uint8), (len(mesh.faces), 1)
+                    )
+                    mesh.metadata['name'] = name
+
+                    output_path = os.path.join(models_dir, asset_file)
+                    parent_dir = os.path.dirname(output_path)
+                    if parent_dir:
+                        os.makedirs(parent_dir, exist_ok=True)
+
+                    # Export format is inferred from the file extension (.glb/.obj)
+                    mesh.export(output_path)
+
+                    created += 1
+                    print(f"  ✓ Created placeholder: {asset_file} "
+                          f"({length:.2f} x {width:.2f} x {height:.2f} m)")
+
+                except Exception as e:
+                    failed += 1
+                    print(f"  ✗ Failed to create placeholder for '{name}': {e}")
+
+    except FileNotFoundError:
+        print(f"✗ CSV file not found: {csv_path}")
+        return False
     except Exception as e:
-        print(f"⚠ Error creating placeholders: {e}")
+        print(f"✗ Error reading CSV: {e}")
+        return False
+
+    print(f"\n{'='*50}")
+    print(f"✓ Placeholders created: {created}")
+    if failed:
+        print(f"✗ Failed:              {failed}")
+    print(f"  Replace with real TRELLIS models when GPU is available")
+    print(f"{'='*50}\n")
+
+    return failed == 0 and created > 0
 
 
 # Entry point
@@ -341,6 +374,9 @@ if __name__ == "__main__":
     
     if args.placeholders or not check_gpu_availability():
         print("\nUsing placeholder mode (no GPU/TRELLIS)")
-        create_placeholder_models(csv_path, models_dir)
+        success = create_placeholder_models(csv_path, models_dir)
     else:
-        batch_convert_from_csv(csv_path, images_dir, models_dir)
+        success = batch_convert_from_csv(csv_path, images_dir, models_dir)
+
+    # Propagate failure so the calling shell script does not report false success
+    sys.exit(0 if success else 1)

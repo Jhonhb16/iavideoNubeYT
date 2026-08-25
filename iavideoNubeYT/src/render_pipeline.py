@@ -410,7 +410,15 @@ if __name__ == "__main__":
     parser.add_argument("--direct", action="store_true",
                        help="Render directly to video (not image sequence)")
     
-    args = parser.parse_args()
+    # When launched via Blender (blender -b -P render_pipeline.py -- --output ...),
+    # sys.argv includes Blender's own flags before the "--" separator.
+    # Only parse the arguments that come after "--".
+    if "--" in sys.argv:
+        cli_args = sys.argv[sys.argv.index("--") + 1:]
+    else:
+        cli_args = sys.argv[1:]
+
+    args = parser.parse_args(cli_args)
     
     # Get script directory for relative paths
     script_dir = os.path.dirname(os.path.abspath(__file__))

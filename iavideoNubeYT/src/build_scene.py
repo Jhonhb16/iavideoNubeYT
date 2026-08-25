@@ -49,7 +49,9 @@ def create_floor():
     mix_shader.inputs["Fac"].default_value = 0.1
     mat.node_tree.links.new(emission.outputs["Emission"], mix_shader.inputs[1])
     mat.node_tree.links.new(bsdf.outputs["BSDF"], mix_shader.inputs[2])
-    mat.node_tree.links.new(mix_shader.outputs["Shader"], bsdf.inputs["Surface"])
+
+    output_node = nodes.get("Material Output")
+    mat.node_tree.links.new(mix_shader.outputs["Shader"], output_node.inputs["Surface"])
     
     floor.data.materials.append(mat)
     
