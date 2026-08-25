@@ -164,7 +164,9 @@ class MotionGraphicsGenerator:
     
     def create_scale_progress_bar(self, width, current_index, total_objects, vehicle_name):
         """Create dynamic scale progress bar showing current position."""
-        bar_height = 60
+        # 60px was too short: the label is drawn at y=50 with an 18px font,
+        # so its lower half was clipped off the canvas.
+        bar_height = 84
         progress_img = Image.new('RGBA', (width, bar_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(progress_img)
         
@@ -496,6 +498,292 @@ class MotionGraphicsGenerator:
         
         return generated_count
     
+    def create_scale_counter(self, width, current_value_m, max_value_m):
+        """
+        Big animated scale counter — the core mechanic of the format.
+
+        The number growing on screen IS the content, not decoration.
+        Rendered as its own layer so it can be interpolated per frame.
+
+        Args:
+            width: Canvas width
+            current_value_m: Interpolated metre value for this frame
+            max_value_m: Largest value in the run (drives the fill bar)
+        """
+        panel_h = 200
+        layer = Image.new('RGBA', (width, panel_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+
+        # Format: sub-10m keeps one decimal, above that integers read cleaner
+        if current_value_m < 10:
+            text = f"{current_value_m:.1f}"
+        else:
+            text = f"{current_value_m:,.0f}"
+
+        big_font = self.get_font(size=140)
+        unit_font = self.get_font(size=48)
+
+        # Measure and centre
+        try:
+            bbox = draw.textbbox((0, 0), text, font=big_font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = len(text) * 70, 140
+
+        x = (width - tw) // 2
+        y = 20
+
+        # Drop shadow for legibility over any background
+        draw.text((x + 4, y + 4), text, font=big_font, fill=(0, 0, 0, 180))
+        draw.text((x, y), text, font=big_font, fill=self.colors.get('accent', (0, 220, 255, 255)))
+        draw.text((x + tw + 12, y + 70), "m", font=unit_font,
+                  fill=self.colors.get('text_secondary', (200, 200, 200, 255)))
+
+        return layer
+
+    def create_persistent_reference(self, canvas_h, current_scale_m,
+                                    reference_m=1.8, max_pixel_height=520):
+        """
+        Human silhouette that stays on screen and shrinks as scale grows.
+
+        This is what turns "337m" from an abstraction into something visceral:
+        by the carrier the human is a couple of pixels tall.
+
+        Args:
+            canvas_h: Full frame height
+            current_scale_m: Size of the object currently on screen
+            reference_m: Height of the human reference (1.8m)
+            max_pixel_height: Pixel height the current object occupies on screen
+        """
+        # The object fills max_pixel_height; the human is scaled proportionally
+        ratio = reference_m / max(current_scale_m, 0.01)
+        human_px = int(max_pixel_height * ratio)
+
+        # Clamp: without this, objects smaller than the reference produce a
+        # silhouette taller than the canvas, which gets pasted at a negative
+        # y offset and bleeds its legs across the top of the frame.
+        ceiling = int(canvas_h * 0.62)
+        human_px = max(2, min(human_px, ceiling))
+
+        return self.create_human_silhouette(height=human_px), human_px
+
+    def _interpolate_scale(self, frame, keyframes, holds=None):
+        """
+        Interpolate the displayed metre value between vehicle keyframes.
+
+        The number must HOLD at an object's true value while the camera is
+        focused on it, then climb during the travel to the next object.
+        Interpolating straight through the hold shows a wrong figure (e.g.
+        "0.4 m" while a 0.3 m drone is on screen).
+
+        keyframes: sorted list of (frame_number, scale_m)
+        holds: optional {frame_number: hold_frames} from timestamps.json
+        """
+        if not keyframes:
+            return 0.0
+        if frame <= keyframes[0][0]:
+            return keyframes[0][1]
+        if frame >= keyframes[-1][0]:
+            return keyframes[-1][1]
+
+        for i in range(len(keyframes) - 1):
+            f0, s0 = keyframes[i]
+            f1, s1 = keyframes[i + 1]
+            if f0 <= frame <= f1:
+                if f1 == f0:
+                    return s1
+
+                # Freeze on the current value for the duration of the hold.
+                # When hold_frames is absent (timestamps generated before the
+                # variable-pacing rig), fall back to holding ~45% of the gap.
+                hold = (holds or {}).get(f0)
+                if not hold:
+                    hold = int((f1 - f0) * 0.45)
+                start = f0 + hold
+                if frame <= start:
+                    return s0
+                if f1 <= start:
+                    return s1
+
+                t = (frame - start) / (f1 - start)
+                # Ease-in-out so the number accelerates then settles
+                t = t * t * (3 - 2 * t)
+                # Interpolate in log space: matches how scale is perceived
+                import math
+                ls0 = math.log10(max(s0, 0.01))
+                ls1 = math.log10(max(s1, 0.01))
+                return 10 ** (ls0 + t * (ls1 - ls0))
+        return keyframes[-1][1]
+
+    def generate_overlay_sequence(self, csv_path, timestamps_path,
+                                  output_dir=None, fps=60):
+        """
+        Generate a per-frame overlay PNG sequence with an interpolated counter
+        and a persistent, shrinking human reference.
+
+        This replaces the previous static single-overlay approach, which pasted
+        one frozen overlay across the whole video.
+        """
+        import math
+
+        out_dir = Path(output_dir) if output_dir else (self.output_dir / "sequence")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        self.download_font()
+
+        vehicles = []
+        with open(csv_path, 'r') as f:
+            for row in csv.DictReader(f):
+                vehicles.append(row)
+
+        if not os.path.exists(timestamps_path):
+            print(f"⚠ Timestamps not found: {timestamps_path}")
+            print("  Cannot build a synced overlay sequence without them.")
+            return 0
+
+        with open(timestamps_path, 'r') as f:
+            ts_data = json.load(f)
+
+        timestamps = ts_data.get('timestamps', {})
+        total_frames = int(ts_data.get('total_frames', 0))
+        fps = int(ts_data.get('fps', fps))
+
+        if not timestamps or total_frames <= 0:
+            print("⚠ Timestamps file is empty; cannot build overlay sequence.")
+            return 0
+
+        # Build keyframe list, sorted by frame
+        keyframes = sorted(
+            [(int(v['frame']), float(v['scale_m'])) for v in timestamps.values()]
+        )
+        by_frame = {int(v['frame']): name for name, v in timestamps.items()}
+        # Hold durations exported by the camera rig, used to freeze the counter
+        # while the camera is focused on an object.
+        holds = {int(v['frame']): int(v.get('hold_frames', 0))
+                 for v in timestamps.values()}
+        vehicles_by_name = {v.get('name', ''): v for v in vehicles}
+        max_scale = max(s for _, s in keyframes)
+
+        width, height = self.resolution
+        total_objects = len(keyframes)
+
+        print(f"\nGenerating overlay sequence: {total_frames} frames @ {fps}fps")
+
+        current_index = 0
+        written = 0
+
+        for frame in range(1, total_frames + 1):
+            # Which vehicle is active at this frame
+            while (current_index + 1 < len(keyframes)
+                   and frame >= keyframes[current_index + 1][0]):
+                current_index += 1
+
+            active_frame, active_scale = keyframes[current_index]
+            active_name = by_frame.get(active_frame, '')
+            vehicle_data = vehicles_by_name.get(active_name, {'name': active_name,
+                                                              'scale_m': active_scale})
+
+            overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+
+            # Tactical grid (static backdrop element)
+            try:
+                overlay.alpha_composite(self.create_tactical_grid(width, height))
+            except Exception:
+                pass
+
+            # Progress bar
+            try:
+                bar = self.create_scale_progress_bar(width, current_index,
+                                                     total_objects, active_name)
+                overlay.paste(bar, (0, 0), bar)
+            except Exception:
+                pass
+
+            # Interpolated counter — the heart of the format
+            try:
+                value = self._interpolate_scale(frame, keyframes, holds)
+                counter = self.create_scale_counter(width, value, max_scale)
+                overlay.paste(counter, (0, int(height * 0.10)), counter)
+            except Exception as e:
+                if frame == 1:
+                    print(f"  ⚠ Counter failed: {e}")
+
+            # Persistent human reference, shrinking as scale grows
+            try:
+                silo, silo_px = self.create_persistent_reference(height, active_scale)
+                margin = 60
+                overlay.paste(silo, (margin, height - silo_px - 200), silo)
+            except Exception as e:
+                if frame == 1:
+                    print(f"  ⚠ Reference silhouette failed: {e}")
+
+            # Info panel
+            try:
+                panel = self.create_info_panel(vehicle_data, width, height)
+                overlay.paste(panel, (0, height - panel.height), panel)
+            except Exception:
+                pass
+
+            overlay.save(out_dir / f"ov_{frame:05d}.png")
+            written += 1
+
+            if frame % 300 == 0:
+                print(f"  … {frame}/{total_frames} frames")
+
+        print(f"✓ Overlay sequence complete: {written} frames in {out_dir}")
+        return written
+
+    def burn_sequence_onto_video(self, video_path, output_path,
+                                 sequence_dir=None, fps=60, crf=18):
+        """
+        Burn the per-frame overlay sequence onto the rendered video.
+
+        Unlike the old static approach, this composites a matching PNG per
+        frame, so the counter animates and the reference shrinks in sync.
+        """
+        import subprocess
+
+        seq_dir = Path(sequence_dir) if sequence_dir else (self.output_dir / "sequence")
+        frames = sorted(seq_dir.glob("ov_*.png"))
+
+        if not frames:
+            print(f"⚠ No overlay sequence found in {seq_dir}")
+            return False
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', str(video_path),
+            '-framerate', str(fps),
+            '-i', str(seq_dir / 'ov_%05d.png'),
+            '-filter_complex', '[0:v][1:v]overlay=0:0:shortest=1[out]',
+            '-map', '[out]',
+            '-c:v', 'libx264',
+            '-preset', os.environ.get('IAVIDEO_X264_PRESET', 'medium'),
+            '-crf', str(crf),
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            str(output_path)
+        ]
+
+        # Carry audio through only if the source actually has a stream
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'a',
+             '-show_entries', 'stream=index', '-of', 'csv=p=0', str(video_path)],
+            capture_output=True, text=True
+        )
+        if probe.stdout.strip():
+            cmd[-1:-1] = ['-map', '0:a', '-c:a', 'copy']
+
+        print(f"Burning {len(frames)} overlay frames onto {video_path}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print(f"✓ Overlays burned in: {output_path}")
+            return True
+
+        print(f"⚠ FFmpeg error: {result.stderr[-800:]}")
+        return False
+
     def apply_overlays_to_video(self, video_path, output_path, overlay_dir=None):
         """Apply generated overlays to video using FFmpeg."""
         import subprocess
@@ -565,7 +853,10 @@ def main():
                        help='Apply overlays to video file')
     parser.add_argument('--output-video', default=None,
                        help='Output video path when applying overlays')
-    
+    parser.add_argument('--sequence', action='store_true',
+                       help='Generate a per-frame overlay sequence (animated counter '
+                            'and shrinking human reference) instead of static overlays')
+
     args = parser.parse_args()
     
     # Get script directory for relative paths
@@ -581,15 +872,30 @@ def main():
     
     # Set resolution based on typical render settings
     generator.resolution = (1920, 1080)
-    
-    # Generate overlays
+
+    if args.sequence:
+        # Per-frame animated overlays
+        count = generator.generate_overlay_sequence(str(csv_path), str(timestamps_path))
+        if count == 0:
+            print("⚠ No overlay sequence generated.")
+            sys.exit(1)
+
+        if args.apply_to_video and args.output_video:
+            video_path = Path(args.apply_to_video) if os.path.isabs(args.apply_to_video) else script_dir / args.apply_to_video
+            output_path = Path(args.output_video) if os.path.isabs(args.output_video) else script_dir / args.output_video
+            ok = generator.burn_sequence_onto_video(str(video_path), str(output_path))
+            sys.exit(0 if ok else 1)
+        sys.exit(0)
+
+    # Legacy: static per-vehicle overlays
     generator.generate_all_overlays(str(csv_path), str(timestamps_path))
     
     # Apply to video if requested
     if args.apply_to_video and args.output_video:
         video_path = Path(args.apply_to_video) if os.path.isabs(args.apply_to_video) else script_dir / args.apply_to_video
         output_path = Path(args.output_video) if os.path.isabs(args.output_video) else script_dir / args.output_video
-        generator.apply_overlays_to_video(str(video_path), str(output_path))
+        ok = generator.apply_overlays_to_video(str(video_path), str(output_path))
+        sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

@@ -270,17 +270,49 @@ motion_graphics() {
     log_info "Phase 4: Generating motion graphics overlays..."
     
     cd "$SCRIPT_DIR"
-    
+
+    RENDERED_VIDEO="$OUTPUT_DIR/scale_comparison_${RESOLUTION}_${QUALITY}.mp4"
+    OVERLAY_VIDEO="$OUTPUT_DIR/scale_comparison_overlaid.mp4"
+
+    # Build the per-frame overlay sequence (counter + shrinking human reference)
     python3 "$SRC_DIR/motion_graphics.py" \
+        --sequence \
         --csv "$DATA_DIR/military_vehicles.csv" \
         --timestamps "$DATA_DIR/timestamps.json" \
         --output-dir "$ASSETS_DIR/graphics" \
         --fonts-dir "$ASSETS_DIR/fonts"
-    
-    if [ $? -eq 0 ]; then
-        log_success "Motion graphics generated successfully"
+
+    if [ $? -ne 0 ]; then
+        log_warning "Overlay sequence generation failed; continuing without overlays"
+        return 0
+    fi
+
+    # Burn the sequence onto the rendered video. Without this step the
+    # overlays are generated to disk and never reach the final video.
+    if [ ! -f "$RENDERED_VIDEO" ]; then
+        log_warning "No rendered video at $RENDERED_VIDEO; skipping overlay burn"
+        return 0
+    fi
+
+    python3 "$SRC_DIR/motion_graphics.py" \
+        --apply-to-video "$RENDERED_VIDEO" \
+        --output-video "$OVERLAY_VIDEO" \
+        --csv "$DATA_DIR/military_vehicles.csv" \
+        --timestamps "$DATA_DIR/timestamps.json" \
+        --output-dir "$ASSETS_DIR/graphics" \
+        --fonts-dir "$ASSETS_DIR/fonts"
+
+    if [ $? -eq 0 ] && [ -f "$OVERLAY_VIDEO" ]; then
+        # The overlaid video becomes the input for the audio mix
+        mv -f "$OVERLAY_VIDEO" "$RENDERED_VIDEO"
+        log_success "Motion graphics burned into video"
+
+        # Overlay frames are ~0.15 GB per video; clean unless explicitly kept
+        if [ "${IAVIDEO_KEEP_FRAMES}" != "1" ]; then
+            rm -rf "$ASSETS_DIR/graphics/sequence"
+        fi
     else
-        log_warning "Motion graphics generation had issues"
+        log_warning "Overlay burn failed; continuing with un-overlaid video"
     fi
 }
 

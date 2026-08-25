@@ -35,9 +35,20 @@ class AdaptiveCameraRig:
         self.max_scale = 337.0  # Largest object (e.g., mountain)
         
         # Animation settings
-        self.frames_per_object = 120  # 2 seconds at 60fps
-        self.pause_frames = 108       # 1.8 seconds pause/focus per vehicle (60fps * 1.8)
+        self.frames_per_object = 120  # 2 seconds at 60fps (legacy / fallback)
+        self.pause_frames = 108       # 1.8 seconds pause/focus per vehicle (legacy)
         self.transition_frames = 30   # Smooth transition between objects
+
+        # Variable pacing: breaks the metronome effect of uniform timing.
+        # Small objects move fast; large objects slow down and hold.
+        # Tuned so a 15-object run lands around 56s (under the Shorts ceiling).
+        self.min_travel_seconds = 1.2
+        self.max_travel_seconds = 2.6
+        self.min_hold_seconds = 0.6
+        self.max_hold_seconds = 2.5
+        # A scale jump of this ratio or more earns extra hold time
+        self.jump_ratio_threshold = 1.8
+        self.jump_bonus_seconds = 0.7
         
         # Timestamps for audio/motion graphics sync
         self.timestamps = {}
@@ -149,7 +160,42 @@ class AdaptiveCameraRig:
         print(f"  Camera clip range: {self.camera.data.clip_start}m - {self.camera.data.clip_end}m")
         
         fps = bpy.context.scene.render.fps
-        
+
+        # Pre-compute variable pacing: uniform timing (3.8s x 15 objects) reads
+        # as a metronome and viewers predict the pattern by the third repeat.
+        # Duration scales with object size, and a jump in scale earns extra hold.
+        all_scales = [o.get('scale_m', 1.0) for o in objects_data]
+        min_scale = min(all_scales) if all_scales else 1.0
+        max_scale = max(all_scales) if all_scales else 1.0
+
+        def pacing_for(index, scale_m):
+            """Return (travel_frames, hold_frames) for this object."""
+            import math
+
+            # Log-normalised position in the scale range (0 = smallest, 1 = largest)
+            if max_scale > min_scale:
+                t = ((math.log10(max(scale_m, 0.01)) - math.log10(max(min_scale, 0.01)))
+                     / (math.log10(max_scale) - math.log10(max(min_scale, 0.01))))
+            else:
+                t = 0.5
+            t = max(0.0, min(1.0, t))
+
+            # Travel: 1.5s for the smallest, up to 3.0s for the largest
+            travel = int(fps * (self.min_travel_seconds
+                                + t * (self.max_travel_seconds - self.min_travel_seconds)))
+
+            # Hold: 0.8s baseline, up to 3.0s for the largest
+            hold = int(fps * (self.min_hold_seconds
+                              + t * (self.max_hold_seconds - self.min_hold_seconds)))
+
+            # Bonus hold when this object is a big jump from the previous one
+            if index > 0:
+                prev = all_scales[index - 1]
+                if prev > 0 and (scale_m / prev) >= self.jump_ratio_threshold:
+                    hold += int(fps * self.jump_bonus_seconds)
+
+            return travel, hold
+
         for i, obj_data in enumerate(objects_data):
             obj_name = obj_data.get('name', f'Object_{i}')
             obj_scale = obj_data.get('scale_m', 1.0)
@@ -188,14 +234,19 @@ class AdaptiveCameraRig:
             print(f"    → Camera: {camera_location}")
             print(f"    → Focal: {focal_length:.1f}mm")
             
-            # Move to next object
-            current_frame += self.frames_per_object
-            
-            # Add pause/focus frames after each vehicle (1.8 seconds)
+            # Move to next object (variable pacing)
+            travel_frames, hold_frames = pacing_for(i, obj_scale)
+            self.timestamps[obj_name]['travel_frames'] = travel_frames
+            self.timestamps[obj_name]['hold_frames'] = hold_frames
+
+            current_frame += travel_frames
+
+            # Hold/focus on this vehicle before moving on
             if i < total_objects - 1:
-                pause_frame = current_frame + self.pause_frames
+                pause_frame = current_frame + hold_frames
                 self.setup_keyframe(pause_frame, camera_location, rotation, focal_length)
-                print(f"    → Pause/focus until frame {pause_frame} ({pause_frame/fps:.2f}s)")
+                print(f"    → Hold until frame {pause_frame} ({pause_frame/fps:.2f}s) "
+                      f"[travel {travel_frames/fps:.2f}s, hold {hold_frames/fps:.2f}s]")
                 current_frame = pause_frame
         
         # Hold final frame
