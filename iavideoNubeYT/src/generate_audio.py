@@ -420,9 +420,10 @@ def mix_audio_with_video(
         '-filter_complex', filter_complex,
         '-map', '0:v',  # Video from first input
         '-map', '[audio_out]',
-        '-c:v', 'copy',  # Copy video codec
+        '-c:v', 'copy',  # Copy video codec (no re-encode)
         '-c:a', 'aac',
         '-b:a', '192k',
+        '-movflags', '+faststart',  # Progressive streaming for YouTube
         '-shortest',
         output_path
     ]
@@ -438,15 +439,19 @@ def mix_audio_with_video(
             print(f"\n⚠ FFmpeg error: {result.stderr}")
             
             # Try simpler approach: just add background music
+            # NOTE: the rendered video has no audio stream, so we must NOT
+            # reference [0:a] here — map the background track directly.
             print("\nTrying simplified audio mix...")
             simple_cmd = [
                 'ffmpeg', '-y',
                 '-i', video_path,
-                '-i', background_track,
+                '-stream_loop', '-1', '-i', background_track,
+                '-map', '0:v',
+                '-map', '1:a',
                 '-c:v', 'copy',
                 '-c:a', 'aac',
                 '-b:a', '192k',
-                '-filter_complex', '[1:a]aloop=loop=-1:size=2e+09[bg];[0:a][bg]amix=inputs=2:duration=shortest',
+                '-movflags', '+faststart',
                 '-shortest',
                 output_path
             ]

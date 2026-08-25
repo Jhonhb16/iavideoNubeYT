@@ -11,6 +11,7 @@ Handles:
 import bpy
 import os
 import sys
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -70,7 +71,116 @@ def configure_output_settings(
     print(f"  Directory: {output_dir}")
 
 
-def setup_eevee_next_quality(preset: str = "high"):
+def setup_color_management(look: str = "AgX - Punchy", exposure: float = 0.3,
+                           gamma: float = 1.05):
+    """
+    Configure color management for a punchy, high-contrast look.
+
+    Blender 4.x defaults to the AgX view transform, which is filmic and
+    intentionally desaturated. That reads as flat on a YouTube feed, so we
+    apply a punchier look with a slight exposure lift.
+
+    Args:
+        look: Contrast look name (e.g. "AgX - Punchy", "AgX - High Contrast")
+        exposure: Exposure offset in stops
+        gamma: Gamma adjustment
+    """
+    scene = bpy.context.scene
+    vs = scene.view_settings
+
+    # Look names vary between Blender versions; fall back gracefully.
+    applied_look = None
+    for candidate in (look, "AgX - Punchy", "AgX - High Contrast", "Punchy", "None"):
+        try:
+            vs.look = candidate
+            applied_look = candidate
+            break
+        except (TypeError, AttributeError):
+            continue
+
+    try:
+        vs.exposure = exposure
+        vs.gamma = gamma
+    except AttributeError:
+        pass
+
+    try:
+        scene.display_settings.display_device = 'sRGB'
+    except (TypeError, AttributeError):
+        pass
+
+    print(f"✓ Color management: view_transform={getattr(vs, 'view_transform', '?')}, "
+          f"look={applied_look}, exposure={exposure}")
+
+
+def setup_cinematic_compositor(glow_threshold: float = 0.85,
+                               glow_size: int = 8,
+                               glow_mix: float = -0.75,
+                               enable_streaks: bool = True):
+    """
+    Build a compositor node tree that restores the cinematic bloom look.
+
+    EEVEE Next (Blender 4.2) removed the built-in bloom pass; the equivalent
+    is now done in the compositor with a Glare node in FOG_GLOW mode.
+    A second Glare in STREAKS mode adds anamorphic flares.
+
+    Args:
+        glow_threshold: Brightness above which the glow kicks in
+        glow_size: Glow radius (larger = softer, more diffuse)
+        glow_mix: Blend factor. Negative values mix subtly over the original.
+        enable_streaks: Add an anamorphic streak pass on top of the fog glow
+    """
+    scene = bpy.context.scene
+    scene.use_nodes = True
+    tree = scene.node_tree
+
+    # Start from a clean tree so repeated runs don't stack duplicate nodes
+    tree.nodes.clear()
+
+    render_layers = tree.nodes.new('CompositorNodeRLayers')
+    render_layers.location = (-400, 0)
+
+    composite = tree.nodes.new('CompositorNodeComposite')
+    composite.location = (600, 0)
+
+    last_output = render_layers.outputs['Image']
+
+    # Fog glow: the bloom replacement
+    try:
+        fog = tree.nodes.new('CompositorNodeGlare')
+        fog.location = (-100, 0)
+        fog.glare_type = 'FOG_GLOW'
+        fog.quality = 'HIGH'
+        fog.threshold = glow_threshold
+        fog.size = glow_size
+        fog.mix = glow_mix
+        tree.links.new(last_output, fog.inputs['Image'])
+        last_output = fog.outputs['Image']
+        print("  ✓ Glare FOG_GLOW (bloom replacement)")
+    except (TypeError, AttributeError, KeyError) as e:
+        print(f"  ⚠ Could not add FOG_GLOW glare: {e}")
+
+    # Anamorphic streaks for a more expensive-looking image
+    if enable_streaks:
+        try:
+            streaks = tree.nodes.new('CompositorNodeGlare')
+            streaks.location = (150, -200)
+            streaks.glare_type = 'STREAKS'
+            streaks.quality = 'HIGH'
+            streaks.threshold = 0.95
+            streaks.streaks = 4
+            streaks.mix = -0.85
+            tree.links.new(last_output, streaks.inputs['Image'])
+            last_output = streaks.outputs['Image']
+            print("  ✓ Glare STREAKS (anamorphic flares)")
+        except (TypeError, AttributeError, KeyError) as e:
+            print(f"  ⚠ Could not add STREAKS glare: {e}")
+
+    tree.links.new(last_output, composite.inputs['Image'])
+    print("✓ Cinematic compositor configured")
+
+
+
     """
     Configure EEVEE Next render engine for maximum quality.
     
@@ -209,8 +319,11 @@ def render_to_image_sequence(
     scene.render.image_settings.file_format = format_type
     
     if format_type == 'PNG':
-        scene.render.image_settings.color_mode = 'RGBA'
-        scene.render.image_settings.compression = 15
+        # RGB (not RGBA): the scene has an opaque floor, so the alpha channel
+        # is wasted bytes. Higher compression trades a little CPU for a large
+        # disk saving — critical at ~3400 frames per video.
+        scene.render.image_settings.color_mode = 'RGB'
+        scene.render.image_settings.compression = 50
     elif format_type == 'JPEG':
         scene.render.image_settings.color_mode = 'RGB'
         scene.render.image_settings.quality = 95
@@ -279,16 +392,40 @@ def convert_sequence_to_video(
         frame_pattern = "frame_%04d." + sample_image.split('.')[-1]
         
         # FFmpeg command
+        # NOTE: no audio flags here on purpose. Audio is muxed in a later
+        # phase with -c:v copy, avoiding a second video encode.
+        use_nvenc = os.environ.get('IAVIDEO_USE_NVENC', '').lower() in ('1', 'true', 'yes')
+
         cmd = [
             'ffmpeg', '-y',  # Overwrite output
             '-framerate', str(fps),
             '-i', os.path.join(sequence_dir, frame_pattern),
-            '-c:v', 'libx264',
+        ]
+
+        if use_nvenc:
+            # GPU encoding (RunPod): dramatically faster than libx264 at scale
+            cmd += [
+                '-c:v', 'h264_nvenc',
+                '-preset', 'p5',
+                '-rc', 'vbr',
+                '-cq', str(crf),
+                '-b:v', '0',
+            ]
+        else:
+            cmd += [
+                '-c:v', 'libx264',
+                '-crf', str(crf),
+                '-preset', os.environ.get('IAVIDEO_X264_PRESET', 'medium'),
+            ]
+
+        cmd += [
             '-pix_fmt', 'yuv420p',
-            '-crf', str(crf),
-            '-preset', 'slow',
-            '-c:a', 'aac',
-            '-b:a', '192k',
+            # Declare colour space so YouTube does not re-interpret it
+            '-colorspace', 'bt709',
+            '-color_primaries', 'bt709',
+            '-color_trc', 'bt709',
+            # Move the moov atom to the front for progressive streaming
+            '-movflags', '+faststart',
             output_path
         ]
         
@@ -347,6 +484,8 @@ def run_full_pipeline(
     
     # Configure quality
     setup_eevee_next_quality(quality)
+    setup_color_management()
+    setup_cinematic_compositor()
     
     # Get frame count from camera animation if available
     scene = bpy.context.scene
@@ -389,8 +528,23 @@ def run_full_pipeline(
             # Cleanup sequence if successful
             if success:
                 print(f"\n✓ Final video: {output_video}")
-                # Optional: remove temp sequence
-                # shutil.rmtree(sequence_dir)
+
+                # Remove the PNG sequence: at ~3400 frames this is several GB
+                # per video and will fill the disk within a few runs.
+                # Set IAVIDEO_KEEP_FRAMES=1 to retain frames for debugging.
+                if os.environ.get('IAVIDEO_KEEP_FRAMES', '').lower() in ('1', 'true', 'yes'):
+                    print(f"  ℹ Keeping frame sequence (IAVIDEO_KEEP_FRAMES set): {sequence_dir}")
+                else:
+                    try:
+                        freed = sum(
+                            os.path.getsize(os.path.join(sequence_dir, f))
+                            for f in os.listdir(sequence_dir)
+                            if os.path.isfile(os.path.join(sequence_dir, f))
+                        )
+                        shutil.rmtree(sequence_dir)
+                        print(f"  ✓ Removed temp sequence, freed {freed / (1024**3):.2f} GB")
+                    except Exception as e:
+                        print(f"  ⚠ Could not clean temp sequence: {e}")
     else:
         # Direct video render
         configure_output_settings(output_dir, res_x, res_y, 60, 'FFMPEG')

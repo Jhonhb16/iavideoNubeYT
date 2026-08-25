@@ -289,18 +289,29 @@ mix_final_video() {
     
     cd "$SCRIPT_DIR"
     
-    # Find the most recent rendered video
-    LATEST_VIDEO=$(ls -t "$OUTPUT_DIR"/*.mp4 2>/dev/null | head -n1)
-    
-    if [ -z "$LATEST_VIDEO" ]; then
-        log_warning "No rendered video found for audio mixing"
-        return 0
+    # Explicit path: never discover the input with `ls -t`, which can silently
+    # pick up a stale video from a previous run when the render fails.
+    RENDERED_VIDEO="$OUTPUT_DIR/scale_comparison_${RESOLUTION}_${QUALITY}.mp4"
+    FINAL_VIDEO="$OUTPUT_DIR/final_scale_comparison.mp4"
+
+    if [ ! -f "$RENDERED_VIDEO" ]; then
+        log_warning "Expected rendered video not found: $RENDERED_VIDEO"
+        log_warning "Skipping audio mix (render step likely failed)."
+        return 1
     fi
-    
-    log_info "Mixing audio with: $LATEST_VIDEO"
+
+    # Guard against re-muxing a stale file: the render must be newer than
+    # any existing final video.
+    if [ -f "$FINAL_VIDEO" ] && [ "$FINAL_VIDEO" -nt "$RENDERED_VIDEO" ]; then
+        log_warning "Existing final video is newer than the render."
+        log_warning "Render likely failed. Aborting mix to avoid publishing stale output."
+        return 1
+    fi
+
+    log_info "Mixing audio with: $RENDERED_VIDEO"
     
     # Get video duration
-    VIDEO_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$LATEST_VIDEO" 2>/dev/null || echo "30")
+    VIDEO_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$RENDERED_VIDEO" 2>/dev/null || echo "30")
     
     # Generate audio matching video duration if needed
     python3 "$SRC_DIR/generate_audio.py" \
@@ -308,13 +319,13 @@ mix_final_video() {
         --transitions "5,10,15,20,25" \
         --markers "0,5,10,15,20" \
         --output "$ASSETS_DIR/audio" \
-        --mix-with-video "$LATEST_VIDEO" \
-        --output-video "$OUTPUT_DIR/final_scale_comparison.mp4"
+        --mix-with-video "$RENDERED_VIDEO" \
+        --output-video "$FINAL_VIDEO"
     
     if [ $? -eq 0 ]; then
-        log_success "Final video created: $OUTPUT_DIR/final_scale_comparison.mp4"
+        log_success "Final video created: $FINAL_VIDEO"
     else
-        log_warning "Audio mixing failed. Video without audio available at: $LATEST_VIDEO"
+        log_warning "Audio mixing failed. Video without audio available at: $RENDERED_VIDEO"
     fi
 }
 

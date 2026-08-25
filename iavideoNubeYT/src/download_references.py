@@ -11,6 +11,7 @@ Usage:
 
 import os
 import csv
+import time
 import requests
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -103,66 +104,182 @@ def create_placeholder_image(name: str, output_path: Path) -> bool:
         return False
 
 
-def download_image(url: str, output_path: Path, timeout: int = 30) -> bool:
+def _build_headers(url: str) -> dict:
     """
-    Download an image from URL and save it.
-    
+    Build request headers appropriate for the host.
+
+    Wikimedia blocks generic/spoofed browser User-Agents and returns 429.
+    Their policy requires a descriptive UA identifying the tool and a contact.
+    Override the contact via the IAVIDEO_CONTACT environment variable.
+    """
+    contact = os.environ.get('IAVIDEO_CONTACT', 'https://github.com/Jhonhb16/iavideoNubeYT')
+    wikimedia_ua = f'iavideoNubeYT/1.0 ({contact}) python-requests'
+
+    if 'wikimedia.org' in url or 'wikipedia.org' in url:
+        return {
+            'User-Agent': wikimedia_ua,
+            'Accept': 'image/*,*/*;q=0.8',
+            'Api-User-Agent': wikimedia_ua,
+        }
+
+    return {
+        'User-Agent': wikimedia_ua,
+        'Accept': 'image/*,*/*;q=0.8',
+    }
+
+
+def resolve_pixabay_url(url: str) -> str:
+    """
+    Resolve a Pixabay CDN URL into a downloadable URL via the Pixabay API.
+
+    Direct hotlinking to cdn.pixabay.com is blocked by design (HTTP 403);
+    the official API must be used instead. Set PIXABAY_API_KEY to enable.
+
+    Returns the resolved URL, or the original URL when no key is configured.
+    """
+    if 'pixabay.com' not in url:
+        return url
+
+    api_key = os.environ.get('PIXABAY_API_KEY')
+    if not api_key:
+        print("  ℹ Pixabay URL detected but PIXABAY_API_KEY is not set "
+              "(direct CDN hotlinking returns 403). Skipping API resolution.")
+        return url
+
+    # Derive a search term from the CDN filename, e.g.
+    # .../soldier-557946_1280.png -> "soldier"
+    try:
+        filename = url.rstrip('/').split('/')[-1]
+        query = filename.split('-')[0].split('_')[0]
+
+        resp = requests.get(
+            'https://pixabay.com/api/',
+            params={
+                'key': api_key,
+                'q': query,
+                'image_type': 'photo',
+                'per_page': 3,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        hits = resp.json().get('hits', [])
+
+        if hits:
+            resolved = hits[0].get('largeImageURL') or hits[0].get('webformatURL')
+            if resolved:
+                print(f"  ✓ Pixabay API resolved '{query}'")
+                return resolved
+
+        print(f"  ⚠ Pixabay API returned no results for '{query}'")
+    except Exception as e:
+        print(f"  ⚠ Pixabay API error: {e}")
+
+    return url
+
+
+def download_image(url: str, output_path: Path, timeout: int = 30,
+                   max_retries: int = 4, base_delay: float = 1.5) -> bool:
+    """
+    Download an image from URL and save it, with exponential backoff.
+
+    Retries on HTTP 429 (rate limit) and 5xx errors, honouring the
+    Retry-After header when the server provides one.
+
     Args:
         url: Image URL to download
         output_path: Path to save the downloaded image
         timeout: Request timeout in seconds
-        
+        max_retries: Number of attempts before giving up
+        base_delay: Base seconds for exponential backoff (delay = base * 2**n)
+
     Returns:
         True if download successful, False otherwise
     """
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
-        response.raise_for_status()
-        
-        # Verify it's an image
-        content_type = response.headers.get('content-type', '')
-        if not content_type.startswith('image/'):
-            # Try to open with PIL to verify
-            try:
-                img = Image.open(io.BytesIO(response.content))
-                img.verify()
-            except Exception:
-                print(f"⚠ Invalid image content from {url}")
-                return False
-        
-        # Save the image
-        with open(output_path, 'wb') as f:
-            f.write(response.content)
-        
-        # Verify saved file
+    url = resolve_pixabay_url(url)
+    headers = _build_headers(url)
+
+    for attempt in range(max_retries):
         try:
-            img = Image.open(output_path)
-            img.verify()
-            print(f"✓ Downloaded: {output_path.name} ({len(response.content)} bytes)")
-            return True
-        except Exception:
-            print(f"⚠ Downloaded file is not a valid image: {output_path.name}")
+            response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+
+            # Retry on rate limiting / transient server errors
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < max_retries - 1:
+                    retry_after = response.headers.get('Retry-After')
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            delay = base_delay * (2 ** attempt)
+                    else:
+                        delay = base_delay * (2 ** attempt)
+
+                    print(f"  ⏳ HTTP {response.status_code} — retrying in "
+                          f"{delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+
+            response.raise_for_status()
+
+            # Verify it's an image
+            content_type = response.headers.get('content-type', '')
+            if not content_type.startswith('image/'):
+                try:
+                    img = Image.open(io.BytesIO(response.content))
+                    img.verify()
+                except Exception:
+                    print(f"⚠ Invalid image content from {url}")
+                    return False
+
+            # Save the image
+            with open(output_path, 'wb') as f:
+                f.write(response.content)
+
+            # Verify saved file
+            try:
+                img = Image.open(output_path)
+                img.verify()
+                print(f"✓ Downloaded: {output_path.name} ({len(response.content)} bytes)")
+                return True
+            except Exception:
+                print(f"⚠ Downloaded file is not a valid image: {output_path.name}")
+                return False
+
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"  ⏳ Timeout — retrying in {delay:.1f}s "
+                      f"(attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            print(f"⚠ Timeout downloading {url}")
             return False
-            
-    except requests.exceptions.Timeout:
-        print(f"⚠ Timeout downloading {url}")
-        return False
-    except requests.exceptions.ConnectionError:
-        print(f"⚠ Connection error downloading {url}")
-        return False
-    except requests.exceptions.HTTPError as e:
-        print(f"⚠ HTTP error {e.response.status_code} for {url}")
-        return False
-    except requests.exceptions.RequestException as e:
-        print(f"⚠ Request error downloading {url}: {e}")
-        return False
-    except Exception as e:
-        print(f" Unexpected error downloading {url}: {e}")
-        return False
+        except requests.exceptions.ConnectionError:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"  ⏳ Connection error — retrying in {delay:.1f}s "
+                      f"(attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            print(f"⚠ Connection error downloading {url}")
+            return False
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else '?'
+            print(f"⚠ HTTP error {status} for {url}")
+            if status == 403 and 'pixabay' in url:
+                print("  → Pixabay blocks direct CDN hotlinking. "
+                      "Set PIXABAY_API_KEY to use the official API.")
+            return False
+        except requests.exceptions.RequestException as e:
+            print(f"⚠ Request error downloading {url}: {e}")
+            return False
+        except Exception as e:
+            print(f"⚠ Unexpected error downloading {url}: {e}")
+            return False
+
+    print(f"⚠ Failed after {max_retries} attempts: {url}")
+    return False
 
 
 def process_asset(asset_name: str, image_url: str) -> bool:
@@ -251,6 +368,10 @@ def main():
                         success_count += 1
             else:
                 fail_count += 1
+
+            # Be polite between requests: hammering Wikimedia with 15 rapid
+            # requests is what triggers HTTP 429 in the first place.
+            time.sleep(float(os.environ.get('IAVIDEO_DOWNLOAD_DELAY', '1.0')))
     
     # Summary
     print("\n" + "=" * 60)
