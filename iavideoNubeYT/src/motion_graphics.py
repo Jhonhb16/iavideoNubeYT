@@ -22,7 +22,8 @@ from pathlib import Path
 class MotionGraphicsGenerator:
     """Generate military-style HUD overlays for scale comparison videos."""
     
-    def __init__(self, output_dir="assets/graphics", fonts_dir="assets/fonts"):
+    def __init__(self, output_dir="assets/graphics", fonts_dir="assets/fonts",
+                 variant_seed=None):
         self.output_dir = Path(output_dir)
         self.fonts_dir = Path(fonts_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -46,10 +47,61 @@ class MotionGraphicsGenerator:
             'warning': (255, 100, 100, 255),
             'success': (100, 255, 150, 255)
         }
+
+        # Per-video visual variation.
+        #
+        # An identical HUD applied to every upload is precisely the
+        # "template-based content" pattern that costs monetization. Seeding the
+        # palette per video makes each render visually distinct at no
+        # production cost. Pass a stable seed (e.g. the dataset name) so a
+        # given topic keeps a consistent identity across re-renders.
+        self.variant_seed = variant_seed
+        if variant_seed is not None:
+            self._apply_variant(variant_seed)
         
         # Video settings (will be updated from actual render)
         self.resolution = (1920, 1080)
         self.fps = 60
+
+    def _apply_variant(self, seed):
+        """
+        Shift the accent palette deterministically from a seed.
+
+        Uses a curated palette set rather than a random hue: an arbitrary hue
+        can land on muddy yellows or low-contrast combinations that hurt
+        legibility on a phone screen. Every entry here is checked to read well
+        against the dark render background.
+        """
+        import hashlib
+
+        palettes = [
+            # (name, accent, primary, secondary, grid)
+            ("tactical cyan",  (0, 200, 255),  (180, 220, 255), (100, 150, 200), (50, 80, 100)),
+            ("amber warning",  (255, 176, 0),  (255, 225, 170), (200, 160, 90),  (100, 80, 40)),
+            ("hazard lime",    (170, 255, 60), (215, 255, 180), (140, 190, 100), (70, 100, 45)),
+            ("alert crimson",  (255, 70, 90),  (255, 195, 200), (205, 120, 130), (105, 45, 55)),
+            ("plasma violet",  (185, 120, 255),(220, 200, 255), (160, 130, 200), (75, 55, 105)),
+            ("arctic white",   (225, 245, 255),(240, 250, 255), (170, 190, 205), (70, 85, 95)),
+            ("signal orange",  (255, 125, 40), (255, 205, 175), (205, 145, 105), (105, 65, 40)),
+            ("deep teal",      (0, 230, 190),  (175, 255, 240), (100, 190, 175), (45, 95, 90)),
+        ]
+
+        digest = hashlib.sha256(str(seed).encode()).digest()
+        name, accent, primary, secondary, grid = palettes[digest[0] % len(palettes)]
+        self.grid_density = 6 + (digest[1] % 5)   # 6..10 grid divisions
+        self.variant_name = name
+
+        def with_alpha(rgb, original):
+            return (rgb[0], rgb[1], rgb[2], original[3])
+
+        self.colors['text_accent'] = with_alpha(accent, self.colors['text_accent'])
+        self.colors['progress_bar'] = with_alpha(accent, self.colors['progress_bar'])
+        self.colors['text_primary'] = with_alpha(primary, self.colors['text_primary'])
+        self.colors['text_secondary'] = with_alpha(secondary, self.colors['text_secondary'])
+        self.colors['grid_lines'] = with_alpha(grid, self.colors['grid_lines'])
+        self.colors['accent'] = self.colors['text_accent']
+
+        print(f"✓ Visual variant: {name} (seed: {seed})")
         
     def download_font(self):
         """Download Roboto-Bold font if not exists."""
@@ -231,17 +283,13 @@ class MotionGraphicsGenerator:
         gradient = self.create_gradient_overlay(width, panel_height, 'vertical')
         panel.alpha_composite(gradient)
         
-        # Left section: Human silhouette reference
-        silo = self.create_human_silhouette(height=100)
-        panel.paste(silo, (30, panel_height - 110), silo)
-        
-        # Human label
-        font_small = self.get_font(14)
-        draw.text((30, panel_height - 25), "HUMAN 1.8m", 
-                  font=font_small, fill=self.colors['text_secondary'])
-        
-        # Center section: Vehicle info
-        margin_left = 180
+        # NOTE: the static 100px silhouette that used to live here was removed.
+        # It duplicated the persistent scaling reference and, being fixed-size,
+        # actively contradicted it — two humans of different sizes on screen
+        # destroys the scale illusion the format depends on.
+
+        # Center section: Vehicle info (shifted left into the reclaimed space)
+        margin_left = 60
         y_base = panel_height - 140
         
         # Vehicle name (large)
@@ -523,20 +571,29 @@ class MotionGraphicsGenerator:
         big_font = self.get_font(size=140)
         unit_font = self.get_font(size=48)
 
-        # Measure and centre
+        # Measure number and unit together, otherwise the "m" drawn past the
+        # measured width pushes the visual centre off to one side.
         try:
             bbox = draw.textbbox((0, 0), text, font=big_font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         except Exception:
             tw, th = len(text) * 70, 140
 
-        x = (width - tw) // 2
+        try:
+            ubox = draw.textbbox((0, 0), "m", font=unit_font)
+            uw = ubox[2] - ubox[0]
+        except Exception:
+            uw = 34
+
+        gap = 12
+        total_w = tw + gap + uw
+        x = (width - total_w) // 2
         y = 20
 
         # Drop shadow for legibility over any background
         draw.text((x + 4, y + 4), text, font=big_font, fill=(0, 0, 0, 180))
         draw.text((x, y), text, font=big_font, fill=self.colors.get('accent', (0, 220, 255, 255)))
-        draw.text((x + tw + 12, y + 70), "m", font=unit_font,
+        draw.text((x + tw + gap, y + 70), "m", font=unit_font,
                   fill=self.colors.get('text_secondary', (200, 200, 200, 255)))
 
         return layer
@@ -853,6 +910,10 @@ def main():
                        help='Apply overlays to video file')
     parser.add_argument('--output-video', default=None,
                        help='Output video path when applying overlays')
+    parser.add_argument('--variant-seed', default=None,
+                       help='Seed for per-video palette variation. Use a stable '
+                            'value (e.g. the dataset name) so a topic keeps its '
+                            'identity across re-renders.')
     parser.add_argument('--sequence', action='store_true',
                        help='Generate a per-frame overlay sequence (animated counter '
                             'and shrinking human reference) instead of static overlays')
@@ -867,7 +928,8 @@ def main():
     # Initialize generator
     generator = MotionGraphicsGenerator(
         output_dir=args.output_dir if os.path.isabs(args.output_dir) else script_dir / args.output_dir,
-        fonts_dir=args.fonts_dir if os.path.isabs(args.fonts_dir) else script_dir / args.fonts_dir
+        fonts_dir=args.fonts_dir if os.path.isabs(args.fonts_dir) else script_dir / args.fonts_dir,
+        variant_seed=args.variant_seed
     )
     
     # Set resolution based on typical render settings

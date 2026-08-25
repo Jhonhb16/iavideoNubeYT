@@ -275,8 +275,12 @@ motion_graphics() {
     OVERLAY_VIDEO="$OUTPUT_DIR/scale_comparison_overlaid.mp4"
 
     # Build the per-frame overlay sequence (counter + shrinking human reference)
+    # Per-video palette variation, seeded from the dataset name.
+    VARIANT_SEED="${IAVIDEO_VARIANT_SEED:-$(basename "$DATA_DIR/military_vehicles.csv" .csv)}"
+
     python3 "$SRC_DIR/motion_graphics.py" \
         --sequence \
+        --variant-seed "$VARIANT_SEED" \
         --csv "$DATA_DIR/military_vehicles.csv" \
         --timestamps "$DATA_DIR/timestamps.json" \
         --output-dir "$ASSETS_DIR/graphics" \
@@ -295,6 +299,7 @@ motion_graphics() {
     fi
 
     python3 "$SRC_DIR/motion_graphics.py" \
+        --variant-seed "$VARIANT_SEED" \
         --apply-to-video "$RENDERED_VIDEO" \
         --output-video "$OVERLAY_VIDEO" \
         --csv "$DATA_DIR/military_vehicles.csv" \

@@ -356,6 +356,96 @@ def render_to_image_sequence(
         return False
 
 
+def prepend_inverted_hook(video_path: str, output_path: str,
+                          teaser_seconds: float = 1.5,
+                          black_seconds: float = 0.12,
+                          crf: int = 18, fps: int = 60) -> bool:
+    """
+    Prepend an inverted hook: a teaser of the payoff, then a hard cut to black,
+    then the full run from the smallest object.
+
+    The sweep is ordered smallest-to-largest, so the opening seconds — where
+    the viewer decides whether to stay — show the least impressive object and
+    the payoff lands near the end, after most of the audience has left.
+    Showing the payoff first poses a question instead of a staircase.
+
+    Implemented with a single filter_complex pass (trim + concat) rather than
+    intermediate files, so this costs one encode, not three.
+
+    Args:
+        video_path: Rendered video (smallest to largest)
+        output_path: Destination with the hook prepended
+        teaser_seconds: Length of the payoff teaser taken from the end
+        black_seconds: Hard-cut black gap between teaser and main body
+        crf: Quality for the single re-encode
+        fps: Frame rate (must match the source)
+    """
+    import subprocess
+
+    try:
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', str(video_path)],
+            capture_output=True, text=True
+        )
+        duration = float(probe.stdout.strip())
+    except (ValueError, AttributeError):
+        print("⚠ Could not read video duration; skipping inverted hook")
+        return False
+
+    if duration <= teaser_seconds + 1.0:
+        print(f"⚠ Video too short ({duration:.1f}s) for an inverted hook; skipping")
+        return False
+
+    teaser_start = max(0.0, duration - teaser_seconds)
+
+    # Resolution must match across concat inputs, so read it from the source
+    try:
+        res_probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x',
+             str(video_path)],
+            capture_output=True, text=True
+        )
+        w, h = res_probe.stdout.strip().split('x')
+    except Exception:
+        w, h = '1920', '1080'
+
+    filter_complex = (
+        f"[0:v]trim=start={teaser_start:.3f}:end={duration:.3f},"
+        f"setpts=PTS-STARTPTS[teaser];"
+        f"color=c=black:s={w}x{h}:d={black_seconds}:r={fps}[blk];"
+        f"[0:v]trim=start=0,setpts=PTS-STARTPTS[main];"
+        f"[teaser][blk][main]concat=n=3:v=1[out]"
+    )
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(video_path),
+        '-filter_complex', filter_complex,
+        '-map', '[out]',
+        '-c:v', 'libx264',
+        '-preset', os.environ.get('IAVIDEO_X264_PRESET', 'medium'),
+        '-crf', str(crf),
+        '-pix_fmt', 'yuv420p',
+        '-colorspace', 'bt709',
+        '-color_primaries', 'bt709',
+        '-color_trc', 'bt709',
+        '-movflags', '+faststart',
+        str(output_path)
+    ]
+
+    print(f"\nPrepending inverted hook ({teaser_seconds}s teaser from {teaser_start:.1f}s)...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode == 0:
+        print(f"✓ Inverted hook applied: {output_path}")
+        return True
+
+    print(f"⚠ Inverted hook failed: {result.stderr[-600:]}")
+    return False
+
+
 def convert_sequence_to_video(
     sequence_dir: str,
     output_path: str,
