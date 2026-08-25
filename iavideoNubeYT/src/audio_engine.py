@@ -340,7 +340,7 @@ class AudioEngine:
         
         # Convert back to 16-bit PCM
         return struct.pack(f'{len(mixed_samples)}h', 
-                          [max(-32768, min(32767, int(s * 32767))) for s in mixed_samples])
+                          *[max(-32768, min(32767, int(s * 32767))) for s in mixed_samples])
     
     def normalize_for_youtube(self, input_wav: Path, output_wav: Path):
         """Normalize audio to YouTube standards using FFmpeg (-14 LUFS, -1 dBTP)."""

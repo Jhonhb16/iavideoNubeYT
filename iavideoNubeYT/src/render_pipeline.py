@@ -84,55 +84,67 @@ def setup_eevee_next_quality(preset: str = "high"):
     scene.render.engine = 'BLENDER_EEVEE_NEXT'
     
     if preset == "low":
-        eevee.taa_render_samples = 16
-        eevee.taa_time_samples = 8
+        render_samples, time_samples = 16, 8
         shadow_size = '1024'
     elif preset == "medium":
-        eevee.taa_render_samples = 32
-        eevee.taa_time_samples = 16
+        render_samples, time_samples = 32, 16
         shadow_size = '2048'
     elif preset == "high":
-        eevee.taa_render_samples = 64
-        eevee.taa_time_samples = 32
+        render_samples, time_samples = 64, 32
         shadow_size = '4096'
     else:  # ultra
-        eevee.taa_render_samples = 128
-        eevee.taa_time_samples = 64
+        render_samples, time_samples = 128, 64
         shadow_size = '8192'
-    
-    # Enable all quality features
-    eevee.use_bloom = True
-    eevee.bloom_threshold = 0.7
-    eevee.bloom_knee = 0.5
-    eevee.bloom_intensity = 0.6
-    eevee.bloom_color = (1.0, 1.0, 1.0)
-    
+
+    # Blender 4.2 EEVEE Next removed/renamed several legacy EEVEE properties.
+    # Guard each assignment so the pipeline stays compatible across versions.
+    def set_if_exists(obj, attr, value):
+        """Assign attr only when the property exists on this Blender version."""
+        if hasattr(obj, attr):
+            setattr(obj, attr, value)
+            return True
+        return False
+
+    # Sampling
+    set_if_exists(eevee, 'taa_render_samples', render_samples)
+    set_if_exists(eevee, 'taa_time_samples', time_samples)
+
+    # Bloom (removed in EEVEE Next 4.2 - moved to the compositor)
+    if set_if_exists(eevee, 'use_bloom', True):
+        set_if_exists(eevee, 'bloom_threshold', 0.7)
+        set_if_exists(eevee, 'bloom_knee', 0.5)
+        set_if_exists(eevee, 'bloom_intensity', 0.6)
+        set_if_exists(eevee, 'bloom_color', (1.0, 1.0, 1.0))
+
     # Shadows
-    eevee.use_shadows = True
-    eevee.shadow_cube_size = shadow_size
-    eevee.shadow_high_bitdepth = True
-    
-    # Screen Space Reflections
-    eevee.use_ssr = True
-    eevee.ssr_thickness = 0.1
-    eevee.ssr_max_roughness = 0.5
-    
-    # Ambient Occlusion
-    eevee.use_gtao = True
-    eevee.gtao_distance = 10.0
-    eevee.gtao_factor = 1.5
-    
+    set_if_exists(eevee, 'use_shadows', True)
+    set_if_exists(eevee, 'shadow_cube_size', shadow_size)
+    set_if_exists(eevee, 'shadow_high_bitdepth', True)
+
+    # Screen Space Reflections (replaced by raytracing in EEVEE Next)
+    if set_if_exists(eevee, 'use_ssr', True):
+        set_if_exists(eevee, 'ssr_thickness', 0.1)
+        set_if_exists(eevee, 'ssr_max_roughness', 0.5)
+    else:
+        set_if_exists(eevee, 'use_raytracing', True)
+
+    # Ambient Occlusion (folded into raytracing in EEVEE Next)
+    if set_if_exists(eevee, 'use_gtao', True):
+        set_if_exists(eevee, 'gtao_distance', 10.0)
+        set_if_exists(eevee, 'gtao_factor', 1.5)
+
     # Subsurface Scattering (for any translucent materials)
-    eevee.use_sss = True
-    eevee.sss_samples = 32
-    
+    if set_if_exists(eevee, 'use_sss', True):
+        set_if_exists(eevee, 'sss_samples', 32)
+
     # Motion blur for cinematic feel
     scene.render.use_motion_blur = True
     scene.render.motion_blur_shutter = 0.5
-    
+
+    actual_samples = getattr(eevee, 'taa_render_samples', render_samples)
+
     print(f"✓ EEVEE Next configured: {preset} quality preset")
-    print(f"  Samples: {eevee.taa_render_samples}")
-    print(f"  Bloom: Enabled")
+    print(f"  Samples: {actual_samples}")
     print(f"  Shadows: {shadow_size}")
     print(f"  Motion Blur: Enabled")
 
